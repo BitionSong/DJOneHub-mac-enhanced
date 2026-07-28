@@ -1,4 +1,4 @@
-# DJOneHub macOS 增强版
+# DJOneHub：Mac 来电提醒增强版
 
 这是在 [DJOneHub](https://github.com/ZenGeekLabs/DJOneHub) 基础上做的 macOS 改造版。原项目解决了大疆第一代 4G 模块在 Mac 上的短信、eSIM 与 USB 4G 上网；这一版把重点放在“模块长期插在 Mac 上时，能不能像一张真正的电话卡一样被看见”。
 
@@ -12,6 +12,8 @@
 | 网络策略 | Wi-Fi 优先，Wi-Fi 不可用时由 USB 4G 兜底；手动关闭 4G 后，短信和来电监听仍保持。 |
 
 来电提醒和“在 Mac 上接听电话”是两件事。目前已经完成来电状态监听和拒接；模块还没有暴露出可用的双向通话音频，因此暂不支持 Mac 接听或通话。
+
+![Mac 来电监控面板，号码末四位已遮挡](docs/images/macos-call-panel-redacted.png)
 
 ## 原项目基础能力
 
