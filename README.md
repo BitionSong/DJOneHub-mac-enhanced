@@ -4,6 +4,8 @@
 
 ## 这次改了什么
 
+![Mac 来电与短信原生提醒，号码和验证码均已遮挡](docs/images/macos-call-and-sms-notifications-redacted.png)
+
 | 改造 | 实现效果 |
 | --- | --- |
 | 来电提醒 | 有电话打进实体 SIM 时，Mac 显示紧凑的原生来电卡片，网页关掉后也能继续提醒，可直接拒接。 |
