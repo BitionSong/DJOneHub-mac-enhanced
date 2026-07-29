@@ -51,9 +51,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smsTimer: Timer?
     private var gpsTimer: Timer?
     private var gpsAnimationTimer: Timer?
+    private var gpsSearchTimeoutTimer: Timer?
     private var gpsStatusItem: NSStatusItem?
     private var gpsWasEnabled = false
-    private var gpsSearchStartedAt: Date?
     private var gpsSearchTimedOut = false
     private var gpsStartupFramesRemaining = 0
     private var gpsAnimationFrame = 0
@@ -133,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         smsTimer?.invalidate()
         gpsTimer?.invalidate()
         stopGPSAnimation()
+        cancelGPSSearchTimeout()
         removeGPSStatusItem()
     }
 
@@ -214,19 +215,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let signalLevel = Self.gpsSignalLevel(for: status.lastFix)
             if !gpsWasEnabled {
                 gpsWasEnabled = true
-                gpsSearchStartedAt = Date()
                 gpsSearchTimedOut = false
                 startGPSAnimation()
+                scheduleGPSSearchTimeout()
             }
             if let signalLevel {
                 stopGPSAnimation()
+                cancelGPSSearchTimeout()
                 showGPSStatusItem(signalLevel: signalLevel)
             } else if gpsSearchTimedOut {
-                stopGPSAnimation()
-                showGPSStatusItem(signalLevel: nil)
-            } else if let gpsSearchStartedAt,
-                      Date().timeIntervalSince(gpsSearchStartedAt) >= 120 {
-                gpsSearchTimedOut = true
                 stopGPSAnimation()
                 showGPSStatusItem(signalLevel: nil)
             } else if gpsAnimationTimer == nil {
@@ -234,9 +231,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             gpsWasEnabled = false
-            gpsSearchStartedAt = nil
             gpsSearchTimedOut = false
             stopGPSAnimation()
+            cancelGPSSearchTimeout()
             removeGPSStatusItem()
         }
     }
@@ -279,6 +276,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gpsAnimationTimer?.invalidate()
         gpsAnimationTimer = nil
         gpsStartupFramesRemaining = 0
+    }
+
+    private func scheduleGPSSearchTimeout() {
+        cancelGPSSearchTimeout()
+        gpsSearchTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.gpsWasEnabled else { return }
+                self.gpsSearchTimedOut = true
+                self.stopGPSAnimation()
+                self.showGPSStatusItem(signalLevel: nil)
+            }
+        }
+    }
+
+    private func cancelGPSSearchTimeout() {
+        gpsSearchTimeoutTimer?.invalidate()
+        gpsSearchTimeoutTimer = nil
     }
 
     private func renderGPSAnimationFrame() {
