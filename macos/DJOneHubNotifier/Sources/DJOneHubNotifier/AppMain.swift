@@ -55,6 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var initializedCalls = false
     private var initializedMessages = false
     private var consecutiveErrors = 0
+    // URLSession may take longer than the timer interval while the module is
+    // handling an AT command. Never let an older response overwrite a newer
+    // incoming-call state and hide the panel.
+    private var callPollInFlight = false
+    private var smsPollInFlight = false
 
     init(arguments: [String]) {
         let baseURL = Self.argumentValue("--base-url", in: arguments)
@@ -117,6 +122,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pollCalls() async {
+        guard !callPollInFlight else {
+            return
+        }
+        callPollInFlight = true
+        defer { callPollInFlight = false }
+
         do {
             let status = try await api.callStatus()
             consecutiveErrors = 0
@@ -159,6 +170,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pollMessages() async {
+        guard !smsPollInFlight else {
+            return
+        }
+        smsPollInFlight = true
+        defer { smsPollInFlight = false }
+
         do {
             let messages = try await api.messages()
             if !initializedMessages {
