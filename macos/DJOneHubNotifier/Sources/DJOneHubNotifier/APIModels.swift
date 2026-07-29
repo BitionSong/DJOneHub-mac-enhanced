@@ -65,6 +65,20 @@ struct GPSFixSummary: Codable, Sendable {
     let satellites: String
 }
 
+struct NetworkCheckResult: Codable, Sendable {
+    let ok: Bool
+}
+
+struct ModemStatus: Codable, Sendable {
+    let signalDBM: Int?
+    let networkMode: String?
+
+    enum CodingKeys: String, CodingKey {
+        case signalDBM = "signal_dbm"
+        case networkMode = "network_mode"
+    }
+}
+
 enum APIError: LocalizedError {
     case invalidResponse
     case http(Int)
@@ -98,6 +112,25 @@ struct DJOneHubAPI: Sendable {
 
     func gpsStatus() async throws -> GPSStatus {
         try await get(path: "api/gps")
+    }
+
+    func isUsingCellularRoute() async throws -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "api/network/check-4g"))
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 5
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.http(http.statusCode)
+        }
+        return try Self.decoder.decode(NetworkCheckResult.self, from: data).ok
+    }
+
+    func modemStatus() async throws -> ModemStatus {
+        try await get(path: "api/status")
     }
 
     func rejectCall() async throws -> RejectResponse {

@@ -38,6 +38,13 @@ enum SelfTest {
     }
 }
 
+private struct NetworkSpeedSample {
+    let interfaceName: String
+    let rxBytes: UInt64
+    let txBytes: UInt64
+    let capturedAt: Date
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let api: DJOneHubAPI
@@ -51,9 +58,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var callTimer: Timer?
     private var smsTimer: Timer?
     private var gpsTimer: Timer?
+    private var cellularTimer: Timer?
+    private var networkSpeedTimer: Timer?
     private var gpsAnimationTimer: Timer?
     private var gpsSearchTimeoutTimer: Timer?
     private var gpsStatusItem: NSStatusItem?
+    private var cellularStatusItem: NSStatusItem?
+    private var networkSpeedStatusItem: NSStatusItem?
+    private var lastNetworkSpeedSample: NetworkSpeedSample?
     private var gpsWasEnabled = false
     private var gpsSearchTimedOut = false
     private var gpsStartupFramesRemaining = 0
@@ -69,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // incoming-call state and hide the panel.
     private var callPollInFlight = false
     private var smsPollInFlight = false
+    private var networkSpeedPollInFlight = false
 
     init(arguments: [String]) {
         let baseURL = Self.argumentValue("--base-url", in: arguments)
@@ -107,10 +120,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gpsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.pollGPSStatus() }
         }
+        showNetworkSpeedStatusItem()
+        cellularTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.pollCellularStatus() }
+        }
+        networkSpeedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollNetworkSpeed() }
+        }
         Task {
             await pollCalls()
             await pollMessages()
             await pollGPSStatus()
+            await pollCellularStatus()
         }
     }
 
@@ -133,9 +154,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         callTimer?.invalidate()
         smsTimer?.invalidate()
         gpsTimer?.invalidate()
+        cellularTimer?.invalidate()
+        networkSpeedTimer?.invalidate()
         stopGPSAnimation()
         cancelGPSSearchTimeout()
         removeGPSStatusItem()
+        removeCellularStatusItem()
+        removeNetworkSpeedStatusItem()
     }
 
     private func pollCalls() async {
@@ -242,6 +267,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func pollCellularStatus() async {
+        guard (try? await api.isUsingCellularRoute()) == true,
+              let modem = try? await api.modemStatus(),
+              let signalDBM = modem.signalDBM,
+              Self.isCellularNetwork(modem.networkMode)
+        else {
+            removeCellularStatusItem()
+            return
+        }
+        showCellularStatusItem(signalLevel: Self.cellularSignalLevel(signalDBM))
+    }
+
+    private func showCellularStatusItem(signalLevel: Int) {
+        if cellularStatusItem == nil {
+            cellularStatusItem = NSStatusBar.system.statusItem(withLength: 42)
+            cellularStatusItem?.button?.target = self
+            cellularStatusItem?.button?.action = #selector(openDJOneHubFromCellularMenuBar)
+        }
+        cellularStatusItem?.button?.image = Self.cellularStatusImage(signalLevel: signalLevel)
+        cellularStatusItem?.button?.toolTip = "DJOneHub 4G 正在接管网络；点击打开控制面板"
+    }
+
+    private func removeCellularStatusItem() {
+        guard let cellularStatusItem else { return }
+        NSStatusBar.system.removeStatusItem(cellularStatusItem)
+        self.cellularStatusItem = nil
+    }
+
+    private func showNetworkSpeedStatusItem() {
+        guard networkSpeedStatusItem == nil else { return }
+        networkSpeedStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        networkSpeedStatusItem?.button?.target = self
+        networkSpeedStatusItem?.button?.action = #selector(openDJOneHubFromNetworkSpeedMenuBar)
+        networkSpeedStatusItem?.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        networkSpeedStatusItem?.button?.title = "↓— ↑—"
+        networkSpeedStatusItem?.button?.toolTip = "当前默认网络的实时下载与上传速度；点击打开 DJOneHub"
+    }
+
+    private func removeNetworkSpeedStatusItem() {
+        guard let networkSpeedStatusItem else { return }
+        NSStatusBar.system.removeStatusItem(networkSpeedStatusItem)
+        self.networkSpeedStatusItem = nil
+        lastNetworkSpeedSample = nil
+    }
+
+    private func pollNetworkSpeed() {
+        guard !networkSpeedPollInFlight else { return }
+        networkSpeedPollInFlight = true
+        Task { @MainActor [weak self] in
+            let sample = await Task.detached(priority: .utility) {
+                Self.defaultNetworkSpeedSample()
+            }.value
+            guard let self else { return }
+            self.networkSpeedPollInFlight = false
+            self.updateNetworkSpeed(with: sample)
+        }
+    }
+
+    private func updateNetworkSpeed(with sample: NetworkSpeedSample?) {
+        guard let sample else {
+            lastNetworkSpeedSample = nil
+            networkSpeedStatusItem?.button?.title = "↓— ↑—"
+            return
+        }
+        defer { lastNetworkSpeedSample = sample }
+        guard let previous = lastNetworkSpeedSample,
+              previous.interfaceName == sample.interfaceName,
+              sample.rxBytes >= previous.rxBytes,
+              sample.txBytes >= previous.txBytes
+        else {
+            networkSpeedStatusItem?.button?.title = "↓— ↑—"
+            return
+        }
+        let elapsedSeconds = sample.capturedAt.timeIntervalSince(previous.capturedAt)
+        guard elapsedSeconds > 0 else { return }
+        let download = Double(sample.rxBytes - previous.rxBytes) / elapsedSeconds
+        let upload = Double(sample.txBytes - previous.txBytes) / elapsedSeconds
+        networkSpeedStatusItem?.button?.title = "↓\(Self.compactRate(download)) ↑\(Self.compactRate(upload))"
+    }
+
     private func showGPSStatusItem(signalLevel: Int?, scanPhase: Int? = nil) {
         if gpsStatusItem == nil {
             gpsStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -315,6 +420,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openDJOneHubFromMenuBar() {
         gpsMapPanel.toggle()
+    }
+
+    @objc private func openDJOneHubFromCellularMenuBar() {
+        openDJOneHub()
+    }
+
+    @objc private func openDJOneHubFromNetworkSpeedMenuBar() {
+        openDJOneHub()
+    }
+
+    private static func isCellularNetwork(_ mode: String?) -> Bool {
+        let normalized = mode?.uppercased() ?? ""
+        return normalized.contains("LTE") || normalized.contains("4G")
+    }
+
+    private static func cellularSignalLevel(_ dbm: Int) -> Int {
+        if dbm >= -65 { return 4 }
+        if dbm >= -75 { return 3 }
+        if dbm >= -85 { return 2 }
+        return 1
+    }
+
+    private static func compactRate(_ bytesPerSecond: Double) -> String {
+        guard bytesPerSecond.isFinite, bytesPerSecond > 0 else { return "0B" }
+        if bytesPerSecond < 1_024 { return "\(Int(bytesPerSecond.rounded()))B" }
+        if bytesPerSecond < 1_048_576 { return "\(Int((bytesPerSecond / 1_024).rounded()))K" }
+        return String(format: "%.1fM", bytesPerSecond / 1_048_576)
+    }
+
+    nonisolated private static func defaultNetworkSpeedSample() -> NetworkSpeedSample? {
+        guard let route = commandOutput("/sbin/route", arguments: ["-n", "get", "default"]),
+              let interfaceName = route
+                  .split(separator: "\n")
+                  .compactMap({ line -> String? in
+                      let text = line.trimmingCharacters(in: .whitespaces)
+                      guard text.hasPrefix("interface:") else { return nil }
+                      return text.replacingOccurrences(of: "interface:", with: "")
+                          .trimmingCharacters(in: .whitespaces)
+                  })
+                  .first,
+              let netstat = commandOutput("/usr/sbin/netstat", arguments: ["-ibn"])
+        else { return nil }
+
+        for line in netstat.split(separator: "\n") {
+            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard fields.count >= 10,
+                  String(fields[0]).trimmingCharacters(in: CharacterSet(charactersIn: "*")) == interfaceName,
+                  fields[2].hasPrefix("<Link#"),
+                  let rxBytes = UInt64(fields[6]),
+                  let txBytes = UInt64(fields[9])
+            else { continue }
+            return NetworkSpeedSample(
+                interfaceName: interfaceName,
+                rxBytes: rxBytes,
+                txBytes: txBytes,
+                capturedAt: Date()
+            )
+        }
+        return nil
+    }
+
+    nonisolated private static func commandOutput(_ executable: String, arguments: [String]) -> String? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+        guard process.terminationStatus == 0 else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
+
+    // A compact stepped mobile-signal indicator. Weakening signal fades the
+    // highest missing bar instead of removing it, so the level stays legible.
+    // The "4G" text is part of a template image and follows the menu-bar theme.
+    private static func cellularStatusImage(signalLevel: Int) -> NSImage {
+        let image = NSImage(size: NSSize(width: 42, height: 18))
+        image.lockFocus()
+        let active = NSColor.black
+        let inactive = NSColor.black.withAlphaComponent(0.28)
+        for (index, height) in [4.2, 7.4, 10.6, 13.8].enumerated() {
+            (index < signalLevel ? active : inactive).setFill()
+            let bar = NSBezierPath(
+                roundedRect: NSRect(x: CGFloat(index) * 5.2, y: 1, width: 3.6, height: height),
+                xRadius: 0.9,
+                yRadius: 0.9
+            )
+            bar.fill()
+        }
+        let label = "4G" as NSString
+        label.draw(
+            at: NSPoint(x: 24, y: 3),
+            withAttributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: NSColor.black,
+            ]
+        )
+        image.unlockFocus()
+        image.isTemplate = true
+        image.accessibilityDescription = "DJOneHub 4G 信号 \(signalLevel) 格"
+        return image
     }
 
     private static func gpsSignalLevel(for fix: GPSFixSummary?) -> Int? {
