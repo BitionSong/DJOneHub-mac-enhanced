@@ -50,7 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var callTimer: Timer?
     private var smsTimer: Timer?
     private var gpsTimer: Timer?
+    private var gpsAnimationTimer: Timer?
     private var gpsStatusItem: NSStatusItem?
+    private var gpsWasEnabled = false
+    private var gpsStartupFramesRemaining = 0
+    private var gpsAnimationFrame = 0
     private var lastActiveCallID: String?
     private var seenCallHistoryIDs = Set<String>()
     private var seenMessageIDs = Set<String>()
@@ -126,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         callTimer?.invalidate()
         smsTimer?.invalidate()
         gpsTimer?.invalidate()
+        stopGPSAnimation()
         removeGPSStatusItem()
     }
 
@@ -204,28 +209,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pollGPSStatus() async {
         guard let status = try? await api.gpsStatus() else { return }
         if status.enabled {
-            showGPSStatusItem(signalLevel: Self.gpsSignalLevel(for: status.lastFix))
+            let signalLevel = Self.gpsSignalLevel(for: status.lastFix)
+            if !gpsWasEnabled {
+                gpsWasEnabled = true
+                startGPSAnimation()
+            }
+            if let signalLevel {
+                stopGPSAnimation()
+                showGPSStatusItem(signalLevel: signalLevel)
+            } else if gpsAnimationTimer == nil {
+                startGPSAnimation()
+            }
         } else {
+            gpsWasEnabled = false
+            stopGPSAnimation()
             removeGPSStatusItem()
         }
     }
 
-    private func showGPSStatusItem(signalLevel: Int?) {
+    private func showGPSStatusItem(signalLevel: Int?, scanPhase: Int? = nil) {
         if gpsStatusItem == nil {
             gpsStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             gpsStatusItem?.button?.target = self
             gpsStatusItem?.button?.action = #selector(openDJOneHubFromMenuBar)
         }
-        gpsStatusItem?.button?.image = Self.gpsStatusImage(signalLevel: signalLevel)
+        gpsStatusItem?.button?.image = Self.gpsStatusImage(signalLevel: signalLevel, scanPhase: scanPhase)
         gpsStatusItem?.button?.toolTip = signalLevel == nil
             ? "DJOneHub GPS 定位已开启：正在搜索卫星"
-            : "DJOneHub GPS 定位已开启：信号 (signalLevel)/3"
+            : "DJOneHub GPS 定位已开启：定位正常"
     }
 
     private func removeGPSStatusItem() {
         guard let gpsStatusItem else { return }
         NSStatusBar.system.removeStatusItem(gpsStatusItem)
         self.gpsStatusItem = nil
+    }
+
+    private func startGPSAnimation() {
+        guard gpsAnimationTimer == nil else { return }
+        gpsStartupFramesRemaining = 8
+        gpsAnimationFrame = 0
+        renderGPSAnimationFrame()
+        gpsAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.32, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.renderGPSAnimationFrame()
+            }
+        }
+    }
+
+    private func stopGPSAnimation() {
+        gpsAnimationTimer?.invalidate()
+        gpsAnimationTimer = nil
+        gpsStartupFramesRemaining = 0
+    }
+
+    private func renderGPSAnimationFrame() {
+        gpsAnimationFrame += 1
+        if gpsStartupFramesRemaining > 0 {
+            // First show a neutral, rising four-bar search animation. It is a
+            // UI transition only; no position or signal result is fabricated.
+            let level = ((gpsAnimationFrame - 1) % 4) + 1
+            showGPSStatusItem(signalLevel: level)
+            gpsStartupFramesRemaining -= 1
+            return
+        }
+        // Until the module reports a valid fix, use a red rotating scan arc.
+        showGPSStatusItem(signalLevel: nil, scanPhase: gpsAnimationFrame % 8)
     }
 
     @objc private func openDJOneHubFromMenuBar() {
@@ -239,8 +288,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               satellites >= 4,
               hdop.isFinite
         else { return nil }
-        if satellites >= 8 && hdop <= 1.5 { return 3 }
-        if satellites >= 6 && hdop <= 3 { return 2 }
+        if satellites >= 10 && hdop <= 1.2 { return 4 }
+        if satellites >= 8 && hdop <= 2 { return 3 }
+        if satellites >= 6 && hdop <= 3.5 { return 2 }
         if hdop <= 5 { return 1 }
         return nil
     }
@@ -248,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // `satellite` is not present in every macOS SF Symbols release. Draw a
     // compact vector icon so the menu-bar indicator is reliable on macOS 13.
     // A missing or weak fix is deliberately red and omits signal bars.
-    private static func gpsStatusImage(signalLevel: Int?) -> NSImage {
+    private static func gpsStatusImage(signalLevel: Int?, scanPhase: Int? = nil) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18))
         image.lockFocus()
         let weakSignal = signalLevel == nil
@@ -282,19 +332,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let signalLevel {
             for level in 1...signalLevel {
-                let radius = CGFloat(3 + level * 2)
+                let radius = CGFloat(2) + CGFloat(level) * 1.65
                 let wave = NSBezierPath()
                 wave.appendArc(withCenter: NSPoint(x: 10, y: 10), radius: radius, startAngle: 30, endAngle: 72, clockwise: false)
                 wave.lineWidth = 1.15
                 wave.stroke()
             }
+        } else if let scanPhase {
+            let scan = NSBezierPath()
+            let startAngle = CGFloat(scanPhase * 45)
+            scan.appendArc(
+                withCenter: NSPoint(x: 9, y: 9),
+                radius: 7,
+                startAngle: startAngle,
+                endAngle: startAngle + 78,
+                clockwise: false
+            )
+            scan.lineWidth = 1.35
+            scan.stroke()
         }
 
         image.unlockFocus()
         image.isTemplate = !weakSignal
         image.accessibilityDescription = weakSignal
             ? "DJOneHub GPS 信号弱"
-            : "DJOneHub GPS 信号 (signalLevel ?? 0)/3"
+            : "DJOneHub GPS 定位正常"
         return image
     }
 
