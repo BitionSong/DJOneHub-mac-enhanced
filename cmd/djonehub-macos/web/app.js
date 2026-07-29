@@ -8,6 +8,8 @@ let networkTrafficInFlight = false;
 let callPollInFlight = false;
 let lastActiveCallID = null;
 let cellularPolicyBusy = false;
+let gpsRefreshTimer = null;
+let gpsRefreshInFlight = false;
 
 function setThemePreference(theme) {
   if (theme === "light" || theme === "dark") {
@@ -664,6 +666,87 @@ async function runNetworkCheck(label, path, button) {
   }
 }
 
+function renderGPS(state) {
+  const grid = $("#gps-result");
+  const status = $("#gps-status");
+  const toggle = $("#gps-toggle");
+  const headerToggle = $("#gps-header-toggle");
+  const enabled = Boolean(state?.enabled);
+  toggle.textContent = enabled ? "停止定位" : "启动定位";
+  toggle.classList.toggle("danger", enabled);
+  headerToggle.setAttribute("aria-checked", String(enabled));
+  headerToggle.title = enabled ? "GPS 定位已开启，点击停止" : "默认关闭；开启后仅在本机读取定位信息";
+  $("#gps-refresh").disabled = !enabled;
+  if (!enabled) {
+    status.textContent = "定位服务未启动。坐标只会保留在本机当前进程中。";
+    grid.hidden = true;
+    grid.replaceChildren();
+    return;
+  }
+  const fix = state?.last_fix;
+  if (!fix) {
+    status.textContent = state?.last_error || "正在搜索卫星，请移至窗边或室外后等待。";
+    grid.hidden = true;
+    grid.replaceChildren();
+    return;
+  }
+  status.textContent = `定位已更新；后台每 ${state.poll_interval_s || 60} 秒刷新一次。`;
+  grid.hidden = false;
+  grid.replaceChildren(
+    diagnosticCard("纬度", fix.latitude || "未知", "本机显示，不上传"),
+    diagnosticCard("经度", fix.longitude || "未知", "本机显示，不上传"),
+    diagnosticCard("卫星数", fix.satellites || "未知", "模块本次定位使用的卫星数"),
+    diagnosticCard("精度 HDOP", fix.hdop || "未知", "数值越小通常越稳定"),
+    diagnosticCard("海拔", fix.altitude || "未知", "模块返回值"),
+    diagnosticCard("定位时间", fix.utc || "未知", "模块 UTC 时间"),
+  );
+}
+
+async function toggleGPS() {
+  const pageButton = $("#gps-toggle");
+  const headerButton = $("#gps-header-toggle");
+  if (pageButton.disabled || headerButton.disabled) return;
+  pageButton.disabled = true;
+  headerButton.disabled = true;
+  try {
+    const status = await api("/api/gps");
+    if (status.enabled) {
+      await api("/api/gps/stop", { method: "POST" });
+      notice("定位已停止");
+    } else {
+      await api("/api/gps/start", { method: "POST" });
+      notice("定位已启动，请移至窗边或室外等待");
+    }
+    await loadGPS();
+  } catch (error) {
+    notice(error.message);
+    await loadGPS();
+  } finally {
+    pageButton.disabled = false;
+    headerButton.disabled = false;
+  }
+}
+
+async function loadGPS() {
+  if (gpsRefreshInFlight) return;
+  gpsRefreshInFlight = true;
+  try {
+    renderGPS(await api("/api/gps"));
+  } catch (error) {
+    $("#gps-status").textContent = `定位服务不可用：${error.message}`;
+  } finally {
+    gpsRefreshInFlight = false;
+  }
+}
+
+function setGPSPolling(enabled) {
+  if (gpsRefreshTimer) {
+    clearInterval(gpsRefreshTimer);
+    gpsRefreshTimer = null;
+  }
+  if (enabled) gpsRefreshTimer = setInterval(loadGPS, 5000);
+}
+
 async function loadNetwork() {
   const grid = $("#network-grid");
   const ifaceList = $("#network-interfaces");
@@ -1031,6 +1114,12 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.view === "esim") loadESIM();
     else setESIMHealthPolling(false);
     if (tab.dataset.view === "network") loadNetwork();
+    if (tab.dataset.view === "gps") {
+      void loadGPS();
+      setGPSPolling(true);
+    } else {
+      setGPSPolling(false);
+    }
   });
 });
 
@@ -1140,6 +1229,22 @@ $("#clear-module-sms").addEventListener("click", async () => {
 $("#refresh-esim").addEventListener("click", loadESIM);
 $("#probe-esim-phonebook").addEventListener("click", probeESIMPhonebook);
 $("#refresh-network").addEventListener("click", loadNetwork);
+$("#gps-toggle").addEventListener("click", toggleGPS);
+$("#gps-header-toggle").addEventListener("click", toggleGPS);
+$("#gps-refresh").addEventListener("click", async () => {
+  const button = $("#gps-refresh");
+  button.disabled = true;
+  try {
+    const fix = await api("/api/gps/refresh", { method: "POST" });
+    renderGPS({ enabled: true, last_fix: fix, poll_interval_s: 60 });
+    notice("定位已刷新");
+  } catch (error) {
+    notice(error.message);
+    await loadGPS();
+  } finally {
+    button.disabled = false;
+  }
+});
 $("#check-4g-route").addEventListener("click", () =>
   runNetworkCheck("4G 出口", "/api/network/check-4g", $("#check-4g-route")));
 $("#check-proxy-route").addEventListener("click", () =>
@@ -1162,8 +1267,10 @@ loadStatus();
 loadSMS();
 loadCalls();
 loadCellularPolicy();
+loadGPS();
 setNetworkTrafficPolling(true);
 setInterval(loadStatus, 10000);
 setInterval(loadSMS, 5000);
 setInterval(loadCalls, 2000);
 setInterval(loadCellularPolicy, 10000);
+setInterval(loadGPS, 10000);

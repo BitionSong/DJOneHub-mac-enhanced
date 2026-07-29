@@ -48,6 +48,10 @@ struct RejectResponse: Codable, Sendable {
     let rejected: Bool
 }
 
+struct GPSStatus: Codable, Sendable {
+    let enabled: Bool
+}
+
 enum APIError: LocalizedError {
     case invalidResponse
     case http(Int)
@@ -77,6 +81,10 @@ struct DJOneHubAPI: Sendable {
 
     func messages() async throws -> [SMSMessage] {
         try await get(path: "api/sms")
+    }
+
+    func gpsStatus() async throws -> GPSStatus {
+        try await get(path: "api/gps")
     }
 
     func rejectCall() async throws -> RejectResponse {

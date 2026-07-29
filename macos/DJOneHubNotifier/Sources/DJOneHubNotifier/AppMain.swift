@@ -49,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var callTimer: Timer?
     private var smsTimer: Timer?
+    private var gpsTimer: Timer?
+    private var gpsStatusItem: NSStatusItem?
     private var lastActiveCallID: String?
     private var seenCallHistoryIDs = Set<String>()
     private var seenMessageIDs = Set<String>()
@@ -95,9 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         smsTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.pollMessages() }
         }
+        gpsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.pollGPSStatus() }
+        }
         Task {
             await pollCalls()
             await pollMessages()
+            await pollGPSStatus()
         }
     }
 
@@ -119,6 +125,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         callTimer?.invalidate()
         smsTimer?.invalidate()
+        gpsTimer?.invalidate()
+        removeGPSStatusItem()
     }
 
     private func pollCalls() async {
@@ -191,6 +199,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             // Call polling owns the offline warning to avoid duplicate banners.
         }
+    }
+
+    private func pollGPSStatus() async {
+        guard let status = try? await api.gpsStatus() else { return }
+        if status.enabled {
+            showGPSStatusItem()
+        } else {
+            removeGPSStatusItem()
+        }
+    }
+
+    private func showGPSStatusItem() {
+        if gpsStatusItem == nil {
+            gpsStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            gpsStatusItem?.button?.target = self
+            gpsStatusItem?.button?.action = #selector(openDJOneHubFromMenuBar)
+        }
+        let image = NSImage(systemSymbolName: "location.north.circle.fill", accessibilityDescription: "DJOneHub GPS 定位已开启")
+        image?.isTemplate = true
+        gpsStatusItem?.button?.image = image
+        gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启"
+    }
+
+    private func removeGPSStatusItem() {
+        guard let gpsStatusItem else { return }
+        NSStatusBar.system.removeStatusItem(gpsStatusItem)
+        self.gpsStatusItem = nil
+    }
+
+    @objc private func openDJOneHubFromMenuBar() {
+        openDJOneHub()
     }
 
     private func showIncoming(_ call: CallRecord) {

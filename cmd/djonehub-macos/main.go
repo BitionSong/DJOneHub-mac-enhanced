@@ -105,6 +105,12 @@ type app struct {
 	callConfigured    bool
 	callNotifier      func(callRecord)
 
+	gpsMu          sync.RWMutex
+	gpsEnabled     bool
+	gpsLastFix     *gpsFix
+	gpsLastChecked time.Time
+	gpsLastError   string
+
 	profileNotesMu     sync.Mutex
 	profileNotes       map[string]profileNote
 	profileNotesLoaded bool
@@ -249,6 +255,7 @@ func main() {
 			log.Printf("modem discovery skipped: %v", err)
 			go instance.startSMSPoller(context.Background())
 			go instance.startCallPoller(context.Background())
+			go instance.startGPSPoller(context.Background())
 			serve(instance, listen)
 			return
 		}
@@ -302,6 +309,7 @@ func main() {
 
 	go manager.CheckAllSMS()
 	go instance.startCallPoller(context.Background())
+	go instance.startGPSPoller(context.Background())
 
 	serve(instance, listen)
 }
@@ -741,6 +749,10 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/sms/clear-module", a.clearModuleSMS)
 	mux.HandleFunc("GET /api/calls/status", a.callStatus)
 	mux.HandleFunc("POST /api/calls/reject", a.rejectCall)
+	mux.HandleFunc("GET /api/gps", a.gpsStatus)
+	mux.HandleFunc("POST /api/gps/start", a.startGPS)
+	mux.HandleFunc("POST /api/gps/stop", a.stopGPS)
+	mux.HandleFunc("POST /api/gps/refresh", a.refreshGPS)
 	mux.HandleFunc("POST /api/at", a.executeAT)
 	mux.HandleFunc("GET /api/network", a.networkDiagnostic)
 	mux.HandleFunc("GET /api/network/traffic", a.networkTraffic)

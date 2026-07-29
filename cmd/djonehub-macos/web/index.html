@@ -10,7 +10,7 @@
       if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
     } catch (_) {}
   </script>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/style.css?v=20260729-gps-ui">
 </head>
 <body>
   <header class="app-header">
@@ -30,6 +30,12 @@
           <strong>4G</strong>
         </span>
         <button id="cellular-policy-toggle" class="network-policy-toggle" type="button" role="switch" aria-checked="true" aria-label="4G" title="关闭后强制禁止 Mac 使用 4G；短信和来电监控不受影响">
+          <span class="switch-thumb" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div class="network-policy-control gps-policy-control">
+        <span class="network-policy-copy"><strong>GPS</strong></span>
+        <button id="gps-header-toggle" class="network-policy-toggle" type="button" role="switch" aria-checked="false" aria-label="GPS 定位" title="默认关闭；开启后仅在本机读取定位信息">
           <span class="switch-thumb" aria-hidden="true"></span>
         </button>
       </div>
@@ -79,6 +85,7 @@
       <button class="tab active" data-view="sms"><span>短信</span><small>收件箱</small></button>
       <button class="tab" data-view="esim"><span>eSIM/卡片</span><small>Profile</small></button>
       <button class="tab" data-view="network"><span>网络</span><small>4G USB</small></button>
+      <button class="tab" data-view="gps"><span>定位</span><small>GNSS</small></button>
       <button class="tab" data-view="at"><span>AT 调试</span><small>诊断</small></button>
     </nav>
 
@@ -98,6 +105,20 @@
       </div>
       <p id="sms-status" class="inline-status">尚未读取短信</p>
       <div id="sms-list" class="list empty">暂无短信</div>
+    </section>
+
+    <section id="gps" class="view">
+      <div class="view-intro"><div><span class="section-kicker">LOCAL GNSS</span><h2>定位服务</h2></div><p>默认关闭，仅在本机显示坐标；定位期间每 60 秒刷新一次。</p></div>
+      <div class="section-heading">
+        <h2>当前位置</h2>
+        <div class="heading-actions">
+          <button id="gps-refresh" class="secondary" type="button">立即刷新</button>
+          <button id="gps-toggle" type="button">启动定位</button>
+        </div>
+      </div>
+      <p id="gps-status" class="inline-status">定位服务未启动。</p>
+      <div id="gps-result" class="diagnostic-grid" hidden></div>
+      <p class="inline-status">室内可能无法获得定位。停止定位后，模块将不再持续搜索卫星。</p>
     </section>
 
     <section id="esim" class="view">
@@ -189,6 +210,6 @@
     </form>
   </div>
   <div id="notice" role="status" aria-live="polite"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260729-gps-ui"></script>
 </body>
 </html>
