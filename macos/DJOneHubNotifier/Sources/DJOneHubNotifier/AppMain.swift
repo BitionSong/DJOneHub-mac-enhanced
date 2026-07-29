@@ -53,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var gpsAnimationTimer: Timer?
     private var gpsStatusItem: NSStatusItem?
     private var gpsWasEnabled = false
+    private var gpsSearchStartedAt: Date?
+    private var gpsSearchTimedOut = false
     private var gpsStartupFramesRemaining = 0
     private var gpsAnimationFrame = 0
     private var lastActiveCallID: String?
@@ -212,16 +214,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let signalLevel = Self.gpsSignalLevel(for: status.lastFix)
             if !gpsWasEnabled {
                 gpsWasEnabled = true
+                gpsSearchStartedAt = Date()
+                gpsSearchTimedOut = false
                 startGPSAnimation()
             }
             if let signalLevel {
                 stopGPSAnimation()
                 showGPSStatusItem(signalLevel: signalLevel)
+            } else if gpsSearchTimedOut {
+                stopGPSAnimation()
+                showGPSStatusItem(signalLevel: nil)
+            } else if let gpsSearchStartedAt,
+                      Date().timeIntervalSince(gpsSearchStartedAt) >= 120 {
+                gpsSearchTimedOut = true
+                stopGPSAnimation()
+                showGPSStatusItem(signalLevel: nil)
             } else if gpsAnimationTimer == nil {
                 startGPSAnimation()
             }
         } else {
             gpsWasEnabled = false
+            gpsSearchStartedAt = nil
+            gpsSearchTimedOut = false
             stopGPSAnimation()
             removeGPSStatusItem()
         }
@@ -234,9 +248,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gpsStatusItem?.button?.action = #selector(openDJOneHubFromMenuBar)
         }
         gpsStatusItem?.button?.image = Self.gpsStatusImage(signalLevel: signalLevel, scanPhase: scanPhase)
-        gpsStatusItem?.button?.toolTip = signalLevel == nil
-            ? "DJOneHub GPS 定位已开启：正在搜索卫星"
-            : "DJOneHub GPS 定位已开启：定位正常"
+        if signalLevel != nil {
+            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：定位正常"
+        } else if gpsSearchTimedOut {
+            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：暂未找到卫星信号"
+        } else {
+            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：正在搜索卫星"
+        }
     }
 
     private func removeGPSStatusItem() {
