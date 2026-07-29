@@ -216,9 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             gpsStatusItem?.button?.target = self
             gpsStatusItem?.button?.action = #selector(openDJOneHubFromMenuBar)
         }
-        let image = NSImage(systemSymbolName: "location.north.circle.fill", accessibilityDescription: "DJOneHub GPS 定位已开启")
-        image?.isTemplate = true
-        gpsStatusItem?.button?.image = image
+        gpsStatusItem?.button?.image = Self.gpsStatusImage()
         gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启"
     }
 
@@ -230,6 +228,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openDJOneHubFromMenuBar() {
         openDJOneHub()
+    }
+
+    // `satellite` is not present in every macOS SF Symbols release. Draw a
+    // compact template image so the menu-bar indicator is reliable on macOS 13.
+    private static func gpsStatusImage() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        image.lockFocus()
+        NSColor.black.setFill()
+        NSColor.black.setStroke()
+
+        NSBezierPath(ovalIn: NSRect(x: 7, y: 7, width: 4, height: 4)).fill()
+
+        let upperPanel = NSBezierPath()
+        upperPanel.move(to: NSPoint(x: 2, y: 12))
+        upperPanel.line(to: NSPoint(x: 6.5, y: 10.5))
+        upperPanel.line(to: NSPoint(x: 7.5, y: 12.5))
+        upperPanel.line(to: NSPoint(x: 3, y: 14))
+        upperPanel.close()
+        upperPanel.fill()
+
+        let lowerPanel = NSBezierPath()
+        lowerPanel.move(to: NSPoint(x: 10.5, y: 5.5))
+        lowerPanel.line(to: NSPoint(x: 15, y: 4))
+        lowerPanel.line(to: NSPoint(x: 16, y: 6))
+        lowerPanel.line(to: NSPoint(x: 11.5, y: 7.5))
+        lowerPanel.close()
+        lowerPanel.fill()
+
+        let antenna = NSBezierPath()
+        antenna.move(to: NSPoint(x: 10, y: 10))
+        antenna.line(to: NSPoint(x: 14.5, y: 14.5))
+        antenna.lineWidth = 1.3
+        antenna.stroke()
+
+        let wave = NSBezierPath()
+        wave.appendArc(withCenter: NSPoint(x: 10, y: 10), radius: 6, startAngle: 30, endAngle: 72, clockwise: false)
+        wave.lineWidth = 1.2
+        wave.stroke()
+
+        image.unlockFocus()
+        image.isTemplate = true
+        image.accessibilityDescription = "DJOneHub GPS 定位已开启"
+        return image
     }
 
     private func showIncoming(_ call: CallRecord) {
