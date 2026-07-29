@@ -59,6 +59,8 @@ struct GPSStatus: Codable, Sendable {
 }
 
 struct GPSFixSummary: Codable, Sendable {
+    let latitude: String?
+    let longitude: String?
     let hdop: String
     let satellites: String
 }

@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let api: DJOneHubAPI
     private let webURL: URL
     private let panel = NotifierPanel()
+    private let gpsMapPanel = GPSMapPanel()
     private let previewMode: String?
     private let snapshotPath: String?
     private let healthCheck: Bool
@@ -218,7 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 gpsSearchTimedOut = false
                 startGPSAnimation()
                 scheduleGPSSearchTimeout()
+                gpsMapPanel.show()
             }
+            gpsMapPanel.update(with: status.lastFix)
             if let signalLevel {
                 stopGPSAnimation()
                 cancelGPSSearchTimeout()
@@ -235,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stopGPSAnimation()
             cancelGPSSearchTimeout()
             removeGPSStatusItem()
+            gpsMapPanel.hide()
         }
     }
 
@@ -246,11 +250,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         gpsStatusItem?.button?.image = Self.gpsStatusImage(signalLevel: signalLevel, scanPhase: scanPhase)
         if signalLevel != nil {
-            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：定位正常"
+            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启；点击展开或收起地图"
         } else if gpsSearchTimedOut {
-            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：暂未找到卫星信号"
+            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：暂未找到卫星信号；点击展开或收起地图"
         } else {
-            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：正在搜索卫星"
+            gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启：正在搜索卫星；点击展开或收起地图"
         }
     }
 
@@ -310,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openDJOneHubFromMenuBar() {
-        openDJOneHub()
+        gpsMapPanel.toggle()
     }
 
     private static func gpsSignalLevel(for fix: GPSFixSummary?) -> Int? {
