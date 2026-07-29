@@ -50,6 +50,17 @@ struct RejectResponse: Codable, Sendable {
 
 struct GPSStatus: Codable, Sendable {
     let enabled: Bool
+    let lastFix: GPSFixSummary?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case lastFix = "last_fix"
+    }
+}
+
+struct GPSFixSummary: Codable, Sendable {
+    let hdop: String
+    let satellites: String
 }
 
 enum APIError: LocalizedError {

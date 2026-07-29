@@ -204,20 +204,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pollGPSStatus() async {
         guard let status = try? await api.gpsStatus() else { return }
         if status.enabled {
-            showGPSStatusItem()
+            showGPSStatusItem(signalLevel: Self.gpsSignalLevel(for: status.lastFix))
         } else {
             removeGPSStatusItem()
         }
     }
 
-    private func showGPSStatusItem() {
+    private func showGPSStatusItem(signalLevel: Int?) {
         if gpsStatusItem == nil {
             gpsStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             gpsStatusItem?.button?.target = self
             gpsStatusItem?.button?.action = #selector(openDJOneHubFromMenuBar)
         }
-        gpsStatusItem?.button?.image = Self.gpsStatusImage()
-        gpsStatusItem?.button?.toolTip = "DJOneHub GPS 定位已开启"
+        gpsStatusItem?.button?.image = Self.gpsStatusImage(signalLevel: signalLevel)
+        gpsStatusItem?.button?.toolTip = signalLevel == nil
+            ? "DJOneHub GPS 定位已开启：正在搜索卫星"
+            : "DJOneHub GPS 定位已开启：信号 (signalLevel)/3"
     }
 
     private func removeGPSStatusItem() {
@@ -230,13 +232,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openDJOneHub()
     }
 
+    private static func gpsSignalLevel(for fix: GPSFixSummary?) -> Int? {
+        guard let fix,
+              let satellites = Int(fix.satellites),
+              let hdop = Double(fix.hdop),
+              satellites >= 4,
+              hdop.isFinite
+        else { return nil }
+        if satellites >= 8 && hdop <= 1.5 { return 3 }
+        if satellites >= 6 && hdop <= 3 { return 2 }
+        if hdop <= 5 { return 1 }
+        return nil
+    }
+
     // `satellite` is not present in every macOS SF Symbols release. Draw a
-    // compact template image so the menu-bar indicator is reliable on macOS 13.
-    private static func gpsStatusImage() -> NSImage {
+    // compact vector icon so the menu-bar indicator is reliable on macOS 13.
+    // A missing or weak fix is deliberately red and omits signal bars.
+    private static func gpsStatusImage(signalLevel: Int?) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18))
         image.lockFocus()
-        NSColor.black.setFill()
-        NSColor.black.setStroke()
+        let weakSignal = signalLevel == nil
+        let color: NSColor = weakSignal ? .systemRed : .black
+        color.setFill()
+        color.setStroke()
 
         NSBezierPath(ovalIn: NSRect(x: 7, y: 7, width: 4, height: 4)).fill()
 
@@ -262,14 +280,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         antenna.lineWidth = 1.3
         antenna.stroke()
 
-        let wave = NSBezierPath()
-        wave.appendArc(withCenter: NSPoint(x: 10, y: 10), radius: 6, startAngle: 30, endAngle: 72, clockwise: false)
-        wave.lineWidth = 1.2
-        wave.stroke()
+        if let signalLevel {
+            for level in 1...signalLevel {
+                let radius = CGFloat(3 + level * 2)
+                let wave = NSBezierPath()
+                wave.appendArc(withCenter: NSPoint(x: 10, y: 10), radius: radius, startAngle: 30, endAngle: 72, clockwise: false)
+                wave.lineWidth = 1.15
+                wave.stroke()
+            }
+        }
 
         image.unlockFocus()
-        image.isTemplate = true
-        image.accessibilityDescription = "DJOneHub GPS 定位已开启"
+        image.isTemplate = !weakSignal
+        image.accessibilityDescription = weakSignal
+            ? "DJOneHub GPS 信号弱"
+            : "DJOneHub GPS 信号 (signalLevel ?? 0)/3"
         return image
     }
 
