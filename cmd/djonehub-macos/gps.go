@@ -71,7 +71,7 @@ func (a *app) refreshGPSOnce() (*gpsFix, error) {
 }
 
 func (a *app) startGPSPoller(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -88,12 +88,30 @@ func (a *app) startGPSPoller(ctx context.Context) {
 	}
 }
 
+// syncGPSState restores the local service state after a DJOneHub restart.
+// QGPS is a module runtime setting and can remain enabled across a local
+// process restart, so the menu-bar indicator must read it back instead of
+// assuming the zero-value state is correct.
+func (a *app) syncGPSState() {
+	response, err := a.runATCommand("AT+QGPS?", 5*time.Second)
+	if err != nil {
+		return
+	}
+	enabled := strings.Contains(response, "+QGPS: 1")
+	a.gpsMu.Lock()
+	a.gpsEnabled = enabled
+	if !enabled {
+		a.gpsLastFix = nil
+	}
+	a.gpsMu.Unlock()
+}
+
 func (a *app) gpsStatus(w http.ResponseWriter, _ *http.Request) {
 	a.gpsMu.RLock()
 	defer a.gpsMu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": a.gpsEnabled, "last_fix": a.gpsLastFix, "last_checked": a.gpsLastChecked,
-		"last_error": a.gpsLastError, "poll_interval_s": 60,
+		"last_error": a.gpsLastError, "poll_interval_s": 15,
 	})
 }
 

@@ -690,7 +690,7 @@ function renderGPS(state) {
     grid.replaceChildren();
     return;
   }
-  status.textContent = `定位已更新；后台每 ${state.poll_interval_s || 60} 秒刷新一次。`;
+  status.textContent = `定位已更新；后台每 ${state.poll_interval_s || 15} 秒刷新一次。`;
   grid.hidden = false;
   grid.replaceChildren(
     diagnosticCard("纬度", fix.latitude || "未知", "本机显示，不上传"),
@@ -1236,7 +1236,7 @@ $("#gps-refresh").addEventListener("click", async () => {
   button.disabled = true;
   try {
     const fix = await api("/api/gps/refresh", { method: "POST" });
-    renderGPS({ enabled: true, last_fix: fix, poll_interval_s: 60 });
+    renderGPS({ enabled: true, last_fix: fix, poll_interval_s: 15 });
     notice("定位已刷新");
   } catch (error) {
     notice(error.message);

@@ -256,6 +256,7 @@ func main() {
 			go instance.startSMSPoller(context.Background())
 			go instance.startCallPoller(context.Background())
 			go instance.startGPSPoller(context.Background())
+			go instance.syncGPSState()
 			serve(instance, listen)
 			return
 		}
@@ -310,6 +311,7 @@ func main() {
 	go manager.CheckAllSMS()
 	go instance.startCallPoller(context.Background())
 	go instance.startGPSPoller(context.Background())
+	go instance.syncGPSState()
 
 	serve(instance, listen)
 }
