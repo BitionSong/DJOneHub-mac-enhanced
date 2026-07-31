@@ -38,13 +38,6 @@ enum SelfTest {
     }
 }
 
-private struct NetworkSpeedSample {
-    let interfaceName: String
-    let rxBytes: UInt64
-    let txBytes: UInt64
-    let capturedAt: Date
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let api: DJOneHubAPI
@@ -59,13 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var smsTimer: Timer?
     private var gpsTimer: Timer?
     private var cellularTimer: Timer?
-    private var networkSpeedTimer: Timer?
     private var gpsAnimationTimer: Timer?
     private var gpsSearchTimeoutTimer: Timer?
     private var gpsStatusItem: NSStatusItem?
     private var cellularStatusItem: NSStatusItem?
-    private var networkSpeedStatusItem: NSStatusItem?
-    private var lastNetworkSpeedSample: NetworkSpeedSample?
     private var gpsWasEnabled = false
     private var gpsSearchTimedOut = false
     private var gpsStartupFramesRemaining = 0
@@ -81,7 +71,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // incoming-call state and hide the panel.
     private var callPollInFlight = false
     private var smsPollInFlight = false
-    private var networkSpeedPollInFlight = false
 
     init(arguments: [String]) {
         let baseURL = Self.argumentValue("--base-url", in: arguments)
@@ -120,12 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gpsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.pollGPSStatus() }
         }
-        showNetworkSpeedStatusItem()
         cellularTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.pollCellularStatus() }
-        }
-        networkSpeedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.pollNetworkSpeed() }
         }
         Task {
             await pollCalls()
@@ -155,12 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         smsTimer?.invalidate()
         gpsTimer?.invalidate()
         cellularTimer?.invalidate()
-        networkSpeedTimer?.invalidate()
         stopGPSAnimation()
         cancelGPSSearchTimeout()
         removeGPSStatusItem()
         removeCellularStatusItem()
-        removeNetworkSpeedStatusItem()
     }
 
     private func pollCalls() async {
@@ -295,58 +278,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.cellularStatusItem = nil
     }
 
-    private func showNetworkSpeedStatusItem() {
-        guard networkSpeedStatusItem == nil else { return }
-        networkSpeedStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        networkSpeedStatusItem?.button?.target = self
-        networkSpeedStatusItem?.button?.action = #selector(openDJOneHubFromNetworkSpeedMenuBar)
-        networkSpeedStatusItem?.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-        networkSpeedStatusItem?.button?.title = "↓— ↑—"
-        networkSpeedStatusItem?.button?.toolTip = "当前默认网络的实时下载与上传速度；点击打开 DJOneHub"
-    }
-
-    private func removeNetworkSpeedStatusItem() {
-        guard let networkSpeedStatusItem else { return }
-        NSStatusBar.system.removeStatusItem(networkSpeedStatusItem)
-        self.networkSpeedStatusItem = nil
-        lastNetworkSpeedSample = nil
-    }
-
-    private func pollNetworkSpeed() {
-        guard !networkSpeedPollInFlight else { return }
-        networkSpeedPollInFlight = true
-        Task { @MainActor [weak self] in
-            let sample = await Task.detached(priority: .utility) {
-                Self.defaultNetworkSpeedSample()
-            }.value
-            guard let self else { return }
-            self.networkSpeedPollInFlight = false
-            self.updateNetworkSpeed(with: sample)
-        }
-    }
-
-    private func updateNetworkSpeed(with sample: NetworkSpeedSample?) {
-        guard let sample else {
-            lastNetworkSpeedSample = nil
-            networkSpeedStatusItem?.button?.title = "↓— ↑—"
-            return
-        }
-        defer { lastNetworkSpeedSample = sample }
-        guard let previous = lastNetworkSpeedSample,
-              previous.interfaceName == sample.interfaceName,
-              sample.rxBytes >= previous.rxBytes,
-              sample.txBytes >= previous.txBytes
-        else {
-            networkSpeedStatusItem?.button?.title = "↓— ↑—"
-            return
-        }
-        let elapsedSeconds = sample.capturedAt.timeIntervalSince(previous.capturedAt)
-        guard elapsedSeconds > 0 else { return }
-        let download = Double(sample.rxBytes - previous.rxBytes) / elapsedSeconds
-        let upload = Double(sample.txBytes - previous.txBytes) / elapsedSeconds
-        networkSpeedStatusItem?.button?.title = "↓\(Self.compactRate(download)) ↑\(Self.compactRate(upload))"
-    }
-
     private func showGPSStatusItem(signalLevel: Int?, scanPhase: Int? = nil) {
         if gpsStatusItem == nil {
             gpsStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -426,10 +357,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openDJOneHub()
     }
 
-    @objc private func openDJOneHubFromNetworkSpeedMenuBar() {
-        openDJOneHub()
-    }
-
     private static func isCellularNetwork(_ mode: String?) -> Bool {
         let normalized = mode?.uppercased() ?? ""
         return normalized.contains("LTE") || normalized.contains("4G")
@@ -440,63 +367,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if dbm >= -75 { return 3 }
         if dbm >= -85 { return 2 }
         return 1
-    }
-
-    private static func compactRate(_ bytesPerSecond: Double) -> String {
-        guard bytesPerSecond.isFinite, bytesPerSecond > 0 else { return "0B" }
-        if bytesPerSecond < 1_024 { return "\(Int(bytesPerSecond.rounded()))B" }
-        if bytesPerSecond < 1_048_576 { return "\(Int((bytesPerSecond / 1_024).rounded()))K" }
-        return String(format: "%.1fM", bytesPerSecond / 1_048_576)
-    }
-
-    nonisolated private static func defaultNetworkSpeedSample() -> NetworkSpeedSample? {
-        guard let route = commandOutput("/sbin/route", arguments: ["-n", "get", "default"]),
-              let interfaceName = route
-                  .split(separator: "\n")
-                  .compactMap({ line -> String? in
-                      let text = line.trimmingCharacters(in: .whitespaces)
-                      guard text.hasPrefix("interface:") else { return nil }
-                      return text.replacingOccurrences(of: "interface:", with: "")
-                          .trimmingCharacters(in: .whitespaces)
-                  })
-                  .first,
-              let netstat = commandOutput("/usr/sbin/netstat", arguments: ["-ibn"])
-        else { return nil }
-
-        for line in netstat.split(separator: "\n") {
-            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-            guard fields.count >= 10,
-                  String(fields[0]).trimmingCharacters(in: CharacterSet(charactersIn: "*")) == interfaceName,
-                  fields[2].hasPrefix("<Link#"),
-                  let rxBytes = UInt64(fields[6]),
-                  let txBytes = UInt64(fields[9])
-            else { continue }
-            return NetworkSpeedSample(
-                interfaceName: interfaceName,
-                rxBytes: rxBytes,
-                txBytes: txBytes,
-                capturedAt: Date()
-            )
-        }
-        return nil
-    }
-
-    nonisolated private static func commandOutput(_ executable: String, arguments: [String]) -> String? {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = output
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-        guard process.terminationStatus == 0 else { return nil }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
     }
 
     // A compact stepped mobile-signal indicator. Weakening signal fades the
