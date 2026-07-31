@@ -3,7 +3,12 @@
 这是在 [DJOneHub](https://github.com/ZenGeekLabs/DJOneHub) 基础上做的 macOS 改造版。原项目解决了大疆第一代 4G 模块在 Mac 上的短信、eSIM 与 USB 4G 上网；这一版把重点放在“模块长期插在 Mac 上时，能不能像一张真正的电话卡一样被看见”。
 
 > [!IMPORTANT]
-> 📦 **一键安装包已上传**：最新 v0.1.2-preview（菜单栏不含网速显示）与 v0.1.1-preview（保留菜单栏实时网速）均已发布到 [Releases](https://github.com/rogerbush007-a11y/DJOneHub-mac-enhanced/releases)，按喜好选择即可。下载后双击“安装 DJOneHub.command”即可一键安装，无需终端命令。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+> 📦 **一键安装包已上传**：[Releases](https://github.com/rogerbush007-a11y/DJOneHub-mac-enhanced/releases) 提供三个版本，均双击“安装 DJOneHub.command”一键安装，无需终端命令：
+> - `DJOneHub-macOS-universal-v0.1.3-preview.dmg`：支持 Apple Silicon 与 Intel Mac（⚠️ 未在真实 Intel 机型实测，谨慎下载）
+> - `DJOneHub-macOS-arm64-v0.1.2-preview.dmg`：菜单栏不含网速显示
+> - `DJOneHub-macOS-arm64-v0.1.1-preview.dmg`：保留菜单栏实时网速显示
+>
+> 更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 这次改了什么
 
@@ -53,7 +58,7 @@
 | 网络与流量 | 已实现 | 查看 USB 网卡、默认出口、代理连通性、实时速度和本次流量 |
 | AT 调试 | 已实现 | 在网页中直接向模块发送 AT 指令 |
 | 深浅色外观 | 已实现 | 支持浅色、深色和跟随系统 |
-| Intel Mac | 尚未发布 | 当前预览发行包仅提供 Apple Silicon 版本 |
+| Intel Mac | 实验支持 | universal 安装包已提供 arm64 + x86_64 双架构；未在真实 Intel 机型实测，谨慎使用 |
 
 ## 改造实现说明
 
@@ -125,10 +130,11 @@
 
 ## 下载
 
-除 ZIP 外，还提供一键安装的 DMG 安装包：下载后双击“安装 DJOneHub.command”即可完成安装，无需终端命令。两个版本按喜好选择：
+除 ZIP 外，还提供一键安装的 DMG 安装包：下载后双击“安装 DJOneHub.command”即可完成安装，无需终端命令。版本按喜好选择：
 
-- `DJOneHub-macOS-arm64-v0.1.2-preview.dmg`：最新版，菜单栏不显示网速（只保留 GPS 与 4G 信号图标）。
-- `DJOneHub-macOS-arm64-v0.1.1-preview.dmg`：保留菜单栏实时网速显示。
+- `DJOneHub-macOS-universal-v0.1.3-preview.dmg`：Apple Silicon 与 Intel Mac 通用（⚠️ **风险提示**：Intel 版未在真实机型上实际测试，可能有兼容性问题，谨慎下载）。
+- `DJOneHub-macOS-arm64-v0.1.2-preview.dmg`：Apple Silicon，菜单栏不显示网速（只保留 GPS 与 4G 信号图标）。
+- `DJOneHub-macOS-arm64-v0.1.1-preview.dmg`：Apple Silicon，保留菜单栏实时网速显示。
 
 
 请前往项目的 **Releases** 页面，下载文件名中包含 `macOS-arm64` 的 ZIP 发行包。

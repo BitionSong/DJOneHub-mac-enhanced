@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-07-31 · v0.1.3-preview（支持 Intel Mac，通用安装包）
+
+- 新增通用（universal）安装包 `DJOneHub-macOS-universal-v0.1.3-preview.dmg`：一个安装包同时支持 Apple Silicon（M 系列）与 Intel（x86_64）Mac，macOS 13 及以上。
+- 主程序、libusb 运行库、通知助手均为 arm64 + x86_64 双架构。
+- 本版本不包含菜单栏网速显示（与 v0.1.2 一致）。
+- **风险提示**：通用包仅在 Apple Silicon 上交叉编译并验证架构/签名，**未在真实 Intel Mac 上实际测试**，在 Intel 机型上可能出现兼容性问题，请谨慎下载使用。
+
+
 ## 2026-07-31 · v0.1.2-preview（移除菜单栏网速显示）
 
 - 移除菜单栏“实时下载/上传速度”显示，菜单栏只保留 GPS 与 4G 信号图标。
