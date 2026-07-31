@@ -2,6 +2,9 @@
 
 这是在 [DJOneHub](https://github.com/ZenGeekLabs/DJOneHub) 基础上做的 macOS 改造版。原项目解决了大疆第一代 4G 模块在 Mac 上的短信、eSIM 与 USB 4G 上网；这一版把重点放在“模块长期插在 Mac 上时，能不能像一张真正的电话卡一样被看见”。
 
+> [!IMPORTANT]
+> 📦 **一键安装包已上传**：v0.1.1-preview DMG 已发布到 [Releases](https://github.com/rogerbush007-a11y/DJOneHub-mac-enhanced/releases)。下载后双击“安装 DJOneHub.command”即可一键安装，无需终端命令。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 这次改了什么
 
 ![Mac 来电与短信原生提醒，号码和验证码均已遮挡](docs/images/macos-call-and-sms-notifications-redacted.png)
@@ -121,6 +124,9 @@
 切换模式时，模块会重新枚举 USB 接口，页面可能短暂显示设备断开。请等待系统重新识别，不要在 eSIM Profile 写入等关键操作过程中拔出模块或切换模式。
 
 ## 下载
+
+除 ZIP 外，最新版本还提供一键安装的 DMG 安装包（`DJOneHub-macOS-arm64-v0.1.1-preview.dmg`）：下载后双击“安装 DJOneHub.command”即可完成安装，无需终端命令。
+
 
 请前往项目的 **Releases** 页面，下载文件名中包含 `macOS-arm64` 的 ZIP 发行包。
 
