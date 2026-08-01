@@ -253,6 +253,7 @@ func main() {
 				defer usbATDevice.Close()
 				log.Printf("USB AT bridge opened on DJI %s", usbATDevice.Description())
 				instance.initUSBATESIMManager()
+				instance.ensureCellularDHCP()
 			}
 			log.Printf("modem discovery skipped: %v", err)
 			go instance.startSMSPoller(context.Background())
