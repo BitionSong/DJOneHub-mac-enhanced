@@ -4,6 +4,7 @@
 
 > [!IMPORTANT]
 > 📦 **一键安装包已上传**：[Releases](https://github.com/rogerbush007-a11y/DJOneHub-mac-enhanced/releases) 提供三个 macOS 版本与 Windows 实验版，macOS 版双击“安装 DJOneHub.command”一键安装，无需终端命令：
+> - `DJOneHub-macOS-arm64-v0.1.5-preview.dmg`：新增 4G 网卡 DHCP 自动续租（模块重连后自动恢复 4G 自动联网）
 > - `DJOneHub-macOS-universal-v0.1.3-preview.dmg`：支持 Apple Silicon 与 Intel Mac（⚠️ 未在真实 Intel 机型实测，谨慎下载）
 > - `DJOneHub-macOS-arm64-v0.1.2-preview.dmg`：菜单栏不含网速显示
 > - `DJOneHub-macOS-arm64-v0.1.1-preview.dmg`：保留菜单栏实时网速显示
@@ -135,6 +136,7 @@
 除 ZIP 外，还提供一键安装的 DMG 安装包：下载后双击“安装 DJOneHub.command”即可完成安装，无需终端命令。版本按喜好选择：
 
 - `DJOneHub-macOS-universal-v0.1.3-preview.dmg`：Apple Silicon 与 Intel Mac 通用（⚠️ **风险提示**：Intel 版未在真实机型上实际测试，可能有兼容性问题，谨慎下载）。
+- `DJOneHub-macOS-arm64-v0.1.5-preview.dmg`：Apple Silicon，新增 4G 网卡 DHCP 自动续租（模块 USB 重连后自动恢复 4G 自动联网）。
 - `DJOneHub-macOS-arm64-v0.1.2-preview.dmg`：Apple Silicon，菜单栏不显示网速（只保留 GPS 与 4G 信号图标）。
 - `DJOneHub-macOS-arm64-v0.1.1-preview.dmg`：Apple Silicon，保留菜单栏实时网速显示。
 - `DJOneHub-Windows-amd64-v0.1.4-preview.exe`：Windows 实验版（amd64 单文件，⚠️ **风险提示**：仅交叉编译验证，未在真实 Windows + 4G 模块环境实测；USB 直连 AT/eSIM 依赖 macOS 不可用，需通过串口连接模块，谨慎下载）。
