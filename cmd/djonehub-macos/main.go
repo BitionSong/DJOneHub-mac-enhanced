@@ -179,6 +179,7 @@ type macNetInterface struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	IPv4   string `json:"ipv4"`
+	MAC    string `json:"mac,omitempty"`
 	Kind   string `json:"kind"`
 }
 
@@ -1778,8 +1779,10 @@ func parseMacNetworkServices(output string) []macNetworkService {
 }
 
 func isDJICellularService(service macNetworkService) bool {
-	return strings.EqualFold(strings.TrimSpace(service.HardwarePort), "Baiwang") &&
-		regexp.MustCompile(`^en\d+$`).MatchString(service.Device)
+	port := strings.ToLower(strings.TrimSpace(service.HardwarePort))
+	name := strings.ToLower(strings.TrimSpace(service.Name))
+	matchesBaiwang := strings.Contains(port, "baiwang") || strings.Contains(name, "baiwang")
+	return matchesBaiwang && regexp.MustCompile(`^en\d+$`).MatchString(service.Device)
 }
 
 func setMacNetworkServiceEnabled(name string, enabled bool) error {
@@ -1818,16 +1821,40 @@ func (a *app) ensureCellularDHCP() {
 		log.Printf("cellular DHCP repair: %v", err)
 		return
 	}
+	// Find the DJI cellular network service. macOS may name it differently on
+	// a fresh machine ("Baiwang", "Baiwang 2", localized variants), and it may
+	// also be disabled, in which case DHCP renewals never apply.
 	var target string
 	for _, service := range services {
-		if isDJICellularService(service) && !service.Disabled {
-			target = service.Name
-			break
+		if !isDJICellularService(service) {
+			continue
 		}
+		if service.Disabled {
+			log.Printf("cellular DHCP repair: enabling disabled DJI cellular service %s", service.Name)
+			if err := setMacNetworkServiceEnabled(service.Name, true); err != nil {
+				log.Printf("cellular DHCP repair: enable %s failed: %v", service.Name, err)
+				continue
+			}
+		}
+		target = service.Name
+		break
 	}
+	// No service yet: on a machine that never saw this module, macOS may not
+	// have created a network service for the modem's USB adapter. Create one
+	// so DHCP can be renewed automatically.
 	if target == "" {
-		log.Printf("cellular DHCP repair: no enabled DJI cellular network service")
-		return
+		device := findUnprovisionedUSBModemInterface(services)
+		if device == "" {
+			log.Printf("cellular DHCP repair: no DJI cellular network service and no unprovisioned USB interface")
+			return
+		}
+		var err error
+		target, err = createCellularNetworkService(device)
+		if err != nil {
+			log.Printf("cellular DHCP repair: create network service on %s failed: %v", device, err)
+			return
+		}
+		log.Printf("cellular DHCP repair: created network service %s on %s", target, device)
 	}
 	if _, err := readMacIPv4ServiceInfo(target); err == nil {
 		return
@@ -1845,6 +1872,69 @@ func (a *app) ensureCellularDHCP() {
 		}
 		log.Printf("cellular DHCP repair: attempt %d/2: %v", attempt, waitErr)
 	}
+	// DHCP keeps failing: report the modem USB networking mode so a fresh
+	// machine can be diagnosed (usbnet=0 means the adapter never comes up).
+	if a.usbAT != nil {
+		if resp, err := a.usbAT.Command(`AT+QCFG="usbnet"`, 3*time.Second); err == nil {
+			log.Printf("cellular DHCP repair: AT+QCFG usbnet => %s", strings.TrimSpace(resp))
+		}
+	}
+}
+
+// findUnprovisionedUSBModemInterface returns the en* interface that looks like
+// the DJI modem's USB network adapter but has no macOS network service yet.
+// USB cellular adapters typically use a locally administered (randomized) MAC
+// address rather than a burned-in vendor OUI, which distinguishes them from
+// built-in Ethernet and Wi-Fi.
+func findUnprovisionedUSBModemInterface(services []macNetworkService) string {
+	return selectUnprovisionedUSBInterface(discoverMacNetworkInterfaces(), services)
+}
+
+func selectUnprovisionedUSBInterface(interfaces []macNetInterface, services []macNetworkService) string {
+	hasService := make(map[string]bool)
+	for _, service := range services {
+		hasService[service.Device] = true
+	}
+	for _, item := range interfaces {
+		if item.Kind != "ethernet" || item.Name == "en0" || !isLocallyAdministeredMAC(item.MAC) {
+			continue
+		}
+		if !hasService[item.Name] {
+			return item.Name
+		}
+	}
+	return ""
+}
+
+func isLocallyAdministeredMAC(mac string) bool {
+	clean := strings.ReplaceAll(strings.TrimSpace(mac), "-", ":")
+	parts := strings.Split(clean, ":")
+	if len(parts) == 0 {
+		return false
+	}
+	first, err := strconv.ParseUint(parts[0], 16, 8)
+	if err != nil {
+		return false
+	}
+	return first&0x02 != 0
+}
+
+func createCellularNetworkService(device string) (string, error) {
+	for _, name := range []string{"Baiwang", "Baiwang 2", "DJI 4G"} {
+		if err := createMacNetworkService(name, device); err != nil {
+			continue
+		}
+		return name, nil
+	}
+	return "", fmt.Errorf("no available service name for %s", device)
+}
+
+func createMacNetworkService(name, device string) error {
+	out, err := exec.Command("/usr/sbin/networksetup", "-createnetworkservice", name, device).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s on %s: %s", name, device, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 type macIPv4ServiceInfo struct {
@@ -2203,6 +2293,12 @@ func discoverMacNetworkInterfaces() []macNetInterface {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "status:") {
 				item.Status = strings.TrimSpace(strings.TrimPrefix(line, "status:"))
+			}
+			if strings.HasPrefix(line, "ether ") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					item.MAC = fields[1]
+				}
 			}
 			if strings.HasPrefix(line, "inet ") {
 				fields := strings.Fields(line)
