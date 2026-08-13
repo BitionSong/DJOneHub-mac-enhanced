@@ -4,6 +4,13 @@
 
 DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供短信、4G、GPS、eSIM、来电及通话控制，不修改模块固件。
 
+## 项目沿革
+
+本项目基于 [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneHub) 的模块管理基础能力，以及上游 [VoHive](https://github.com/iniwex5/vohive) 的公开实现继续演进。早期版本围绕短信、eSIM、USB 4G、来电提醒、GPS 与网络自动恢复展开；v1.2.4 在此基础上将日常入口整理为独立 macOS App。
+
+- [旧版完整说明与使用文档](docs/history/README-v0.1.7-preview.md)：保留原有功能说明、接入原理、安装步骤、历史版本与限制。
+- [完整更新记录](CHANGELOG.md)：保留 v0.1.1-preview 至 v1.2.4 的迭代过程。
+
 ## v1.2.4：独立 App 版
 
 从网页控制台整理为独立 macOS App。拨号、通话、短信、通讯录和设置都收进同一套界面；来电与短信提醒不需要网页常驻。
@@ -99,3 +106,11 @@ scripts/package-windows-amd64.sh v1.2.4
 - 与 DJI、Quectel、运营商及 eSIM 厂商不存在隶属或授权关系。
 
 许可证与第三方声明见 [LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md)。
+
+## 致谢
+
+- [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneHub)：原始模块管理与 macOS 使用思路。
+- [VoHive](https://github.com/iniwex5/vohive)：项目早期代码基础；保留其要求的署名声明。
+- [MaVo](https://github.com/moluncn/mavo)（[固定参考提交](https://github.com/moluncn/mavo/commit/0443dfdaf8aec086fd76ba2ee9152fd908114524)，MIT）：本次引入的 UAC 探测、调制解调器桥接与 macOS 音频适配参考。模块侧运行时不随本项目分发。
+- [libusb](https://libusb.info/) 与本项目使用的开源依赖维护者。
+- 分享大疆第一代 4G 模块资料、兼容性结果与测试经验的社区贡献者。
