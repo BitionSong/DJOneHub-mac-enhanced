@@ -14,6 +14,12 @@ The macOS release package includes **libusb 1.0.30**, distributed under the GNU 
 - Source: <https://github.com/libusb/libusb/releases/tag/v1.0.30>
 - License text in the release package: `licenses/libusb-COPYING`
 
+This public-source tree intentionally does **not** contain the MaVo module-side
+voice runtime or any kernel-module binary. Its integration and status APIs stay
+in the source solely so that call control and diagnostics remain buildable.
+See [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md) for the excluded files and the
+conditions required to publish a complete audio runtime.
+
 ## Vendored Source Dependencies
 
 The source repository includes vendored dependencies under `third_party/` so the versions used by DJOneHub remain reproducible. Their original copyright notices and license texts are retained in the corresponding directories.

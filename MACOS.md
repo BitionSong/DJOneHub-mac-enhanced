@@ -11,7 +11,7 @@ EG25-G. It does not require UTM for AT-mode management.
 - Execute explicit AT commands
 - Read and switch physical eUICC profiles through AT APDU transport
 - Local management page at `http://127.0.0.1:7575`
-- Packaged Apple Silicon release (Intel packaging is planned separately)
+- Packaged Universal release containing Apple Silicon and Intel binaries
 
 The cellular data interface remains managed by macOS. This allows macOS to use
 the dongle as its network connection while DJOneHub uses a separate USB serial
@@ -19,8 +19,8 @@ interface for management.
 
 ## Downloaded release
 
-The Apple Silicon ZIP contains the executable, its libusb runtime, licenses and
-the `djonehub` terminal launcher. It does not require Go, Homebrew or a separately
+The Universal DMG contains the backend, SwiftUI App, libusb runtime, licenses,
+installer and uninstaller. It does not require Go, Homebrew or a separately
 installed libusb on the user's Mac.
 
 From the extracted release directory:
@@ -42,14 +42,13 @@ Requirements:
 - Go 1.26 or newer
 
 ```sh
-./scripts/package-macos-arm64.sh v0.1.0-preview
+./scripts/build-dmg-universal.sh v1.0.0-rc1
 ```
 
 Release outputs:
 
-- `dist/release/DJOneHub-macOS-arm64-v0.1.0-preview/`
-- `dist/release/DJOneHub-macOS-arm64-v0.1.0-preview.zip`
-- `dist/release/DJOneHub-macOS-arm64-v0.1.0-preview.zip.sha256`
+- `dist/DJOneHub-macOS-universal-v1.0.0-rc1.dmg`
+- `dist/DJOneHub-macOS-universal-v1.0.0-rc1.dmg.sha256`
 
 The packaging script downloads the official libusb source archive, verifies its
 SHA-256, builds it for macOS 13 or newer and bundles the resulting runtime.

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 @main
 enum DJOneHubNotifierMain {
@@ -12,7 +13,7 @@ enum DJOneHubNotifierMain {
         let app = NSApplication.shared
         let delegate = AppDelegate(arguments: CommandLine.arguments)
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
+        app.setActivationPolicy(.regular)
         app.run()
     }
 }
@@ -41,12 +42,17 @@ enum SelfTest {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let api: DJOneHubAPI
-    private let webURL: URL
-    private let panel = NotifierPanel()
+    private let panel: NotifierPanel
     private let gpsMapPanel = GPSMapPanel()
     private let previewMode: String?
     private let snapshotPath: String?
+    private let callCenter: CallCenter
+    private let contactStore: ContactStore
+    private let ringtoneStore: RingtoneStore
+    private let appSettings: AppSettings
+    private var mainWindow: NSWindow?
     private let healthCheck: Bool
+    private let reviewSafe: Bool
 
     private var callTimer: Timer?
     private var smsTimer: Timer?
@@ -71,20 +77,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // incoming-call state and hide the panel.
     private var callPollInFlight = false
     private var smsPollInFlight = false
+    private var wasCallConnected = false
 
     init(arguments: [String]) {
         let baseURL = Self.argumentValue("--base-url", in: arguments)
             .flatMap(URL.init(string:))
             ?? URL(string: "http://127.0.0.1:7575/")!
         api = DJOneHubAPI(baseURL: baseURL)
-        webURL = baseURL
         previewMode = Self.argumentValue("--preview", in: arguments)
         snapshotPath = Self.argumentValue("--snapshot", in: arguments)
         healthCheck = arguments.contains("--health-check")
+        reviewSafe = arguments.contains("--review-safe")
+        callCenter = CallCenter(api: api)
+        contactStore = ContactStore()
+        panel = NotifierPanel()
+        panel.contactStore = contactStore
+        ringtoneStore = RingtoneStore()
+        appSettings = AppSettings()
+        panel.appSettings = appSettings
         super.init()
     }
 
+    /// 完全退出会 bootout 后端与守护服务；重新打开应用时把缺失的
+    /// LaunchAgent（~/Library/LaunchAgents/<label>.plist）重新引导回来。
+    /// notifier 自身不在此注册，避免手动打开时出现双实例。
+    private func ensureModuleServices() async {
+        let uid = getuid()
+        let agentsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+        for label in ["com.jamie.djonehub", "com.jamie.djonehub-wifi-sms-guard"] {
+            let plist = agentsDir.appendingPathComponent("\(label).plist")
+            guard FileManager.default.fileExists(atPath: plist.path) else { continue }
+            if Self.serviceIsLoaded(label, uid: uid) { continue }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["bootstrap", "gui/\(uid)", plist.path]
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                // 忽略：轮询到离线时仍会再次尝试
+            }
+        }
+    }
+
+    /// launchctl kickstart -k 强制重启已加载的后台服务，用于休眠唤醒后
+    /// 重新初始化 4G 模块、DHCP 与路由策略，或救活挂死的后端进程。
+    private func restartModuleServices() async {
+        let uid = getuid()
+        for label in ["com.jamie.djonehub", "com.jamie.djonehub-wifi-sms-guard"] {
+            guard Self.serviceIsLoaded(label, uid: uid) else { continue }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["kickstart", "-k", "gui/\(uid)/\(label)"]
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                // 忽略：服务不可用时，轮询到离线会再尝试拉起
+            }
+        }
+    }
+
+    private static func serviceIsLoaded(_ label: String, uid: uid_t) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "gui/\(uid)/\(label)"]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installMainMenu()
         if healthCheck {
             Task { await runHealthCheck() }
             return
@@ -100,23 +171,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        callTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.pollCalls() }
+        let demoCall = CommandLine.arguments.contains("--show-call")
+        if !demoCall {
+            callTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.pollCalls() }
+            }
+            smsTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.pollMessages() }
+            }
+            gpsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.pollGPSStatus() }
+            }
+            cellularTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.pollCellularStatus() }
+            }
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self,
+                selector: #selector(systemDidWake),
+                name: NSWorkspace.didWakeNotification,
+                object: nil
+            )
+            Task {
+                // 重新打开应用时，恢复被「完全退出」停止的后台服务（后端 + WiFi/短信守护）
+                await ensureModuleServices()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await pollCalls()
+                await pollMessages()
+                await pollGPSStatus()
+                await pollCellularStatus()
+            }
+            callCenter.start()
+            if !reviewSafe {
+                Task { await contactStore.requestAccess() }
+            }
         }
-        smsTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.pollMessages() }
+        if demoCall {
+            let demo = CallRecord(
+                id: "demo-call",
+                index: 0,
+                direction: "incoming",
+                state: "active",
+                number: "189 •••• ••••",
+                startedAt: Date().addingTimeInterval(-75),
+                updatedAt: Date(),
+                endedAt: nil,
+                missed: false
+            )
+            callCenter.activeCall = demo
+            showMainWindow()
         }
-        gpsTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.pollGPSStatus() }
+        if CommandLine.arguments.contains("--show-window") {
+            showMainWindow()
         }
-        cellularTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.pollCellularStatus() }
-        }
-        Task {
-            await pollCalls()
-            await pollMessages()
-            await pollGPSStatus()
-            await pollCellularStatus()
+        if previewMode == nil, let snapshotPath {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                try? self.saveMainWindowSnapshot(to: URL(fileURLWithPath: snapshotPath))
+                NSApplication.shared.terminate(nil)
+            }
         }
     }
 
@@ -174,7 +286,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if lastActiveCallID != nil {
                     panel.hide()
                 }
+                ringtoneStore.stopRinging()
                 lastActiveCallID = nil
+            }
+
+            if let active = status.active {
+                if active.state == "active" || active.state == "held" {
+                    if !wasCallConnected, !(mainWindow?.isVisible ?? false) {
+                        showMainWindow()
+                    }
+                    wasCallConnected = true
+                } else {
+                    wasCallConnected = false
+                }
+            } else {
+                if wasCallConnected, !(mainWindow?.isVisible ?? false) {
+                    showMainWindow()
+                }
+                wasCallConnected = false
             }
 
             if let missed = history.first(where: { $0.missed && !seenCallHistoryIDs.contains($0.id) }) {
@@ -185,12 +314,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             consecutiveErrors += 1
             if consecutiveErrors == 5 {
+                await ensureModuleServices()
+                await restartModuleServices()
                 panel.show(
                     .error(message: error.localizedDescription),
                     onReject: {},
+                    onAnswer: {},
                     onOpen: openDJOneHub
                 )
             }
+        }
+    }
+
+    /// 系统从休眠唤醒后，强制重启后台服务并立刻恢复轮询与菜单栏状态，
+    /// 避免 4G 模块/网络在唤醒后无法自动找回。
+    @objc private func systemDidWake(_ notification: Notification) {
+        Task { @MainActor in
+            // 等 USB 设备重新枚举、网络栈稳定后再重启服务
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            consecutiveErrors = 0
+            await restartModuleServices()
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await pollCalls()
+            await pollMessages()
+            await pollGPSStatus()
+            await pollCellularStatus()
         }
     }
 
@@ -264,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showCellularStatusItem(signalLevel: Int) {
         if cellularStatusItem == nil {
-            cellularStatusItem = NSStatusBar.system.statusItem(withLength: 42)
+            cellularStatusItem = NSStatusBar.system.statusItem(withLength: 48)
             cellularStatusItem?.button?.target = self
             cellularStatusItem?.button?.action = #selector(openDJOneHubFromCellularMenuBar)
         }
@@ -369,14 +517,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return 1
     }
 
-    // A compact stepped mobile-signal indicator. Weakening signal fades the
-    // highest missing bar instead of removing it, so the level stays legible.
-    // The "4G" text is part of a template image and follows the menu-bar theme.
+    // A compact stepped mobile-signal indicator that mirrors the iPhone
+    // status bar: four signal bars on the left, a "4G" label on the right.
+    // The label is vertically centered and sized to the same height as the
+    // tallest signal bar (13.8pt). Drawn as a template image so macOS renders
+    // it white on a dark menu bar and black on a light one, like iOS.
     private static func cellularStatusImage(signalLevel: Int) -> NSImage {
-        let image = NSImage(size: NSSize(width: 42, height: 18))
+        let image = NSImage(size: NSSize(width: 48, height: 18))
         image.lockFocus()
-        let active = NSColor.black
-        let inactive = NSColor.black.withAlphaComponent(0.28)
+        // 模板色：菜单栏深色时系统渲染为白色，浅色时自动变黑，与 iPhone 状态栏一致
+        let color = NSColor.black
+        let active = color
+        let inactive = color.withAlphaComponent(0.30)
         for (index, height) in [4.2, 7.4, 10.6, 13.8].enumerated() {
             (index < signalLevel ? active : inactive).setFill()
             let bar = NSBezierPath(
@@ -386,12 +538,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             bar.fill()
         }
+        // "4G"：与菜单栏电量百分比同字号（menuBarFont 13pt、SF Pro 常规字重不加粗），垂直居中于信号条
         let label = "4G" as NSString
         label.draw(
-            at: NSPoint(x: 24, y: 3),
+            at: NSPoint(x: 22, y: 0.5),
             withAttributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: NSColor.black,
+                .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+                .foregroundColor: color,
             ]
         )
         image.unlockFocus()
@@ -480,26 +633,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showIncoming(_ call: CallRecord) {
-        NSSound(named: "Glass")?.play()
+        ringtoneStore.startRinging()
         panel.show(
             .incoming(
                 number: NotificationText.displayNumber(call.number),
                 startedAt: call.startedAt
             ),
             onReject: { [weak self] in
-                Task { @MainActor in await self?.rejectCall() }
+                Task { @MainActor in
+                    await self?.rejectCall()
+                    self?.showMainWindow()
+                }
+            },
+            onAnswer: { [weak self] in
+                Task { @MainActor in
+                    self?.callCenter.answer()
+                    self?.showMainWindow()
+                }
             },
             onOpen: openDJOneHub
         )
     }
 
     private func showMissed(_ call: CallRecord) {
+        ringtoneStore.stopRinging()
         panel.show(
             .missed(
                 number: NotificationText.displayNumber(call.number),
                 startedAt: call.startedAt
             ),
             onReject: {},
+            onAnswer: {},
             onOpen: openDJOneHub
         )
     }
@@ -513,6 +677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 code: message.code
             ),
             onReject: {},
+            onAnswer: {},
             onOpen: openDJOneHub
         )
     }
@@ -525,13 +690,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.show(
                 .error(message: "拒接失败：\(error.localizedDescription)"),
                 onReject: {},
+                onAnswer: {},
                 onOpen: openDJOneHub
             )
         }
     }
 
     private func openDJOneHub() {
-        NSWorkspace.shared.open(webURL)
+        showMainWindow()
     }
 
     private func showPreview(_ mode: String) {
@@ -540,15 +706,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.show(
                 .sms(sender: "10086", preview: "验证码 482913", code: "482913"),
                 onReject: {},
+                onAnswer: {},
                 onOpen: openDJOneHub
             )
         default:
             panel.show(
-                .incoming(number: "189 •••• 7376", startedAt: Date()),
+                .incoming(number: "189 •••• ••••", startedAt: Date()),
                 onReject: {},
+                onAnswer: {},
                 onOpen: openDJOneHub
             )
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return true
+    }
+
+    private func showMainWindow() {
+        if mainWindow == nil {
+            let rootView = PhoneAppView()
+                .environmentObject(callCenter)
+                .environmentObject(contactStore)
+                .environmentObject(ringtoneStore)
+                .environmentObject(appSettings)
+            let hosting = NSHostingController(rootView: rootView)
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "DJOneHub"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            // macOS 26 透明 NSWindow + SwiftUI 存在已知渲染 bug（内容偶发 180° 颠倒），
+            // 主窗口改为不透明，圆角与外观全部由 SwiftUI 主体自绘，规避系统级问题。
+            window.isOpaque = true
+            window.backgroundColor = PhoneStyle.appBackgroundNS
+            window.isMovableByWindowBackground = true
+            window.setContentSize(NSSize(width: 400, height: 700))
+            window.center()
+            window.isReleasedWhenClosed = false
+            window.tabbingMode = .disallowed
+            mainWindow = window
+        }
+        mainWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func saveMainWindowSnapshot(to url: URL) throws {
+        guard let view = mainWindow?.contentView else { return }
+        view.layoutSubtreeIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func installMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(
+            withTitle: "关于 DJOneHub",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "隐藏 DJOneHub",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "退出 DJOneHub",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
     }
 
     private static func argumentValue(_ flag: String, in arguments: [String]) -> String? {

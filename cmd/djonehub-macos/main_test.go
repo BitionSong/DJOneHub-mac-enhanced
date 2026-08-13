@@ -11,6 +11,7 @@ func TestPortScore(t *testing.T) {
 		{name: "named Quectel port", port: "/dev/cu.Quectel-AT", want: 100},
 		{name: "usb modem", port: "/dev/cu.usbmodem2101", want: 80},
 		{name: "usb serial", port: "/dev/cu.usbserial-1420", want: 60},
+		{name: "windows COM", port: "COM12", want: 50},
 		{name: "bluetooth", port: "/dev/cu.Bluetooth-Incoming-Port", want: 0},
 	}
 	for _, tt := range tests {
@@ -19,6 +20,22 @@ func TestPortScore(t *testing.T) {
 				t.Fatalf("portScore(%q) = %d, want %d", tt.port, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFilterCandidateATPorts(t *testing.T) {
+	windows := filterCandidateATPorts([]string{"COM3", "COM12", "LPT1", ""}, "windows")
+	if len(windows) != 2 || windows[0] != "COM3" || windows[1] != "COM12" {
+		t.Fatalf("Windows ports = %v, want [COM3 COM12]", windows)
+	}
+
+	darwin := filterCandidateATPorts([]string{
+		"/dev/cu.Bluetooth-Incoming-Port",
+		"/dev/cu.usbmodem2101",
+		"/dev/cu.Quectel-AT",
+	}, "darwin")
+	if len(darwin) != 2 || darwin[0] != "/dev/cu.usbmodem2101" || darwin[1] != "/dev/cu.Quectel-AT" {
+		t.Fatalf("Darwin ports = %v", darwin)
 	}
 }
 
