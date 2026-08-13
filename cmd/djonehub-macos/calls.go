@@ -119,7 +119,6 @@ func (a *app) pollCallOnce() error {
 			return err
 		}
 		a.logModuleVoiceConfig()
-		a.kickModuleVoice()
 		a.callMu.Lock()
 		a.callConfigured = true
 		a.callMu.Unlock()
@@ -179,7 +178,10 @@ func (a *app) applyCallPoll(calls []parsedCall, now time.Time) {
 			callEnded = true
 		}
 		a.callMu.Unlock()
-		if a.audio != nil && !a.audioManualSet && a.audio.isRunning() {
+		a.callMu.RLock()
+		swiftAudioHost := a.swiftAudioHost
+		a.callMu.RUnlock()
+		if a.audio != nil && !swiftAudioHost && !a.audioManualSet && a.audio.isRunning() {
 			a.audio.stop()
 			a.lastAudioHealthLog = time.Time{}
 			log.Printf("voice audio routing stopped")
@@ -233,10 +235,21 @@ func (a *app) applyCallPoll(calls []parsedCall, now time.Time) {
 			a.callNotifier(*notify)
 		}
 	}
-	// Any voice call (ringing, dialing, active or held) keeps the module USB
-	// audio routed to the Mac so the call can be heard and taken on the Mac.
-	if a.callAudioAvailable() && a.audio != nil && !a.audioManualSet && !a.audio.isRunning() {
-		if err := a.audio.start(); err != nil {
+	// Match MaVo's verified lifecycle: the call is established first and media
+	// starts only after CLCC reports one active voice call.
+	a.callMu.RLock()
+	swiftAudioHost := a.swiftAudioHost
+	a.callMu.RUnlock()
+	if selected.State == "active" && swiftAudioHost {
+		if err := a.ensureModuleVoiceRoute(); err != nil {
+			log.Printf("module voice route start for native MaVo host failed: %v", err)
+		} else {
+			log.Printf("module voice route ready for native MaVo audio host")
+		}
+	} else if selected.State == "active" && a.audio != nil && !a.audioManualSet && !a.audio.isRunning() {
+		if err := a.ensureModuleVoiceRoute(); err != nil {
+			log.Printf("module voice route start after active CLCC failed: %v", err)
+		} else if err := a.audio.start(); err != nil {
 			log.Printf("voice audio start failed: %v", err)
 		} else {
 			log.Printf("voice audio routing started")
@@ -347,6 +360,10 @@ func (a *app) rejectCall(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if err := validateCallATResponse(response); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rejected": true,
 		"response": response,
@@ -370,9 +387,12 @@ func (a *app) answerCall(w http.ResponseWriter, _ *http.Request) {
 	a.lastAnswerAt = time.Now()
 	a.callMu.Unlock()
 
-	a.ensureModuleVoiceRouteBudgeted(3500 * time.Millisecond)
 	response, err := a.runATCommand("ATA", 5*time.Second)
 	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := validateCallATResponse(response); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -390,13 +410,17 @@ func (a *app) hangupCall(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	response, err := a.runATCommand("ATH", 5*time.Second)
-	if err != nil {
+	if err != nil || validateCallATResponse(response) != nil {
 		// Some firmwares only accept AT+CHUP to end the current call.
 		response, err = a.runATCommand("AT+CHUP", 5*time.Second)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+	}
+	if err := validateCallATResponse(response); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
 	}
 	log.Printf("hangup call: -> %s", strings.TrimSpace(response))
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -450,9 +474,12 @@ func (a *app) dialCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"dialing": true})
 		return
 	}
-	a.ensureModuleVoiceRouteBudgeted(3500 * time.Millisecond)
 	response, err := a.runATCommand("ATD"+number+";", 8*time.Second)
 	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := validateCallATResponse(response); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -462,6 +489,16 @@ func (a *app) dialCall(w http.ResponseWriter, r *http.Request) {
 		"number":   number,
 		"response": response,
 	})
+}
+
+// validateCallATResponse keeps command echoes and modem ERROR replies from
+// being reported as successful button presses. usbAT returns a completed AT
+// response for both OK and ERROR, so transport success alone is insufficient.
+func validateCallATResponse(response string) error {
+	if atResponseIsError(response) {
+		return fmt.Errorf("模块拒绝通话命令（ERROR）")
+	}
+	return nil
 }
 
 // normalizeDialNumber keeps digits plus + * # and strips common formatting
@@ -484,10 +521,6 @@ func normalizeDialNumber(raw string) string {
 }
 
 func (a *app) audioStart(w http.ResponseWriter, _ *http.Request) {
-	if !a.callAudioAvailable() {
-		writeError(w, http.StatusNotImplemented, "公开源码版未包含模块侧语音运行时")
-		return
-	}
 	if a.audio == nil {
 		writeError(w, http.StatusBadGateway, "通话音频不可用")
 		return
@@ -538,8 +571,8 @@ func (a *app) audioMute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) audioRecord(w http.ResponseWriter, r *http.Request) {
-	if !a.callAudioAvailable() {
-		writeError(w, http.StatusNotImplemented, "公开源码版未包含模块侧语音运行时")
+	if a.swiftAudioHost {
+		writeError(w, http.StatusConflict, "MaVo 音频策略已接管媒体；录音观察器尚未接入，避免影响实时音频")
 		return
 	}
 	var body struct {
@@ -574,4 +607,48 @@ func (a *app) audioRecord(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusBadRequest, "action must be start or stop")
 	}
+}
+
+// audioHostRegister selects the exact MaVo-derived Swift host route.  It is
+// opt-in so an older installed notifier continues to use the previous Go
+// route until this app has registered successfully.
+func (a *app) audioHostRegister(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	a.callMu.Lock()
+	a.swiftAudioHost = body.Enabled
+	a.callMu.Unlock()
+	if body.Enabled && a.audio != nil && a.audio.isRunning() {
+		a.audio.stop()
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": body.Enabled})
+}
+
+func (a *app) audioHostConfig(w http.ResponseWriter, _ *http.Request) {
+	device := discoverDJIUSBDevice()
+	if device == nil {
+		writeError(w, http.StatusBadGateway, "未找到模块 USB 身份")
+		return
+	}
+	parse := func(raw string) uint64 {
+		value, _ := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(raw), "0x"), 16, 32)
+		return value
+	}
+	a.moduleVoiceMu.Lock()
+	routeReady := a.moduleVoiceReady
+	a.moduleVoiceMu.Unlock()
+	a.callMu.RLock()
+	hostEnabled := a.swiftAudioHost
+	a.callMu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"vendor_id":    uint16(parse(device.VendorID)),
+		"product_id":   uint16(parse(device.ProductID)),
+		"location_id":  uint32(parse(device.LocationID)),
+		"route_ready":  routeReady,
+		"host_enabled": hostEnabled,
+	})
 }

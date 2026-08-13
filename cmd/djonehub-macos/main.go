@@ -90,6 +90,7 @@ type app struct {
 	usbATBackoffErr   string
 
 	smsMu          sync.RWMutex
+	smsOperationMu sync.Mutex
 	sms            []receivedSMS
 	smsSendMu      sync.Mutex
 	smsReassembler *smscodec.Reassembler
@@ -112,6 +113,10 @@ type app struct {
 	audioManualSet     bool
 	audioManualOn      bool
 	lastAudioHealthLog time.Time
+	// The native notifier registers this before a call.  When present, the
+	// backend owns only module control and call state; MaVo's Swift service owns
+	// every host-audio callback and media loop.
+	swiftAudioHost bool
 
 	moduleVoiceMu     sync.Mutex
 	moduleVoiceOpMu   sync.Mutex
@@ -119,6 +124,9 @@ type app struct {
 	moduleVoiceLast   time.Time
 	moduleVoiceErr    string
 	moduleVoiceDetail string
+
+	moduleSetupMu sync.RWMutex
+	moduleSetup   moduleSetupStatus
 
 	gpsMu          sync.RWMutex
 	gpsEnabled     bool
@@ -538,7 +546,7 @@ func discoverDJIUSBDevice() *usbDeviceStatus {
 	for _, block := range strings.Split(string(out), "\n\n") {
 		vendorID, okVendor := intProperty(block, "idVendor")
 		productID, okProduct := intProperty(block, "idProduct")
-		if !okVendor || !okProduct || vendorID != 0x2ca3 {
+		if !okVendor || !okProduct || !isSupportedUSBModuleIdentity(vendorID, productID) {
 			continue
 		}
 		if device == nil {
@@ -718,6 +726,8 @@ func (a *app) pollSMSOnce() error {
 	if a.demo || a.modem != nil {
 		return nil
 	}
+	a.smsOperationMu.Lock()
+	defer a.smsOperationMu.Unlock()
 	if err := a.ensureUSBAT(); err != nil {
 		a.setSMSPollStatus(err)
 		return err
@@ -958,6 +968,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/status", a.status)
 	mux.HandleFunc("GET /api/sms", a.listSMS)
 	mux.HandleFunc("GET /api/sms/status", a.smsStatus)
+	mux.HandleFunc("PATCH /api/sms/settings", a.updateSMSSettings)
+	mux.HandleFunc("GET /api/sim/identity", a.simIdentity)
 	mux.HandleFunc("POST /api/sms/send", a.sendSMS)
 	mux.HandleFunc("POST /api/sms/refresh", a.refreshSMS)
 	mux.HandleFunc("POST /api/sms/clear-module", a.clearModuleSMS)
@@ -971,7 +983,11 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/calls/audio/stop", a.audioStop)
 	mux.HandleFunc("POST /api/calls/audio/mute", a.audioMute)
 	mux.HandleFunc("POST /api/calls/audio/record", a.audioRecord)
+	mux.HandleFunc("POST /api/calls/audio/host/register", a.audioHostRegister)
+	mux.HandleFunc("GET /api/calls/audio/host/config", a.audioHostConfig)
 	mux.HandleFunc("GET /api/voice/status", a.voiceStatusAPI)
+	mux.HandleFunc("GET /api/module/setup", a.moduleSetupStatusAPI)
+	mux.HandleFunc("POST /api/module/setup", a.moduleSetupStartAPI)
 	mux.HandleFunc("POST /api/voice/start", a.voiceStartAPI)
 	mux.HandleFunc("POST /api/voice/stop", a.voiceStopAPI)
 	mux.HandleFunc("GET /api/gps", a.gpsStatus)
@@ -1018,12 +1034,10 @@ func (a *app) routes() http.Handler {
 
 func (a *app) platformInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"os":          runtime.GOOS,
-		"web_console": runtime.GOOS == "windows" || a.webConsole,
-		// The public source tree deliberately omits the module-side voice
-		// runtime. Do not advertise Mac call audio merely because CoreAudio is
-		// available on this host.
-		"call_audio":            a.callAudioAvailable(),
+		"version":               "1.2.4",
+		"os":                    runtime.GOOS,
+		"web_console":           runtime.GOOS == "windows" || a.webConsole,
+		"call_audio":            runtime.GOOS == "darwin",
 		"direct_usb_at":         runtime.GOOS == "darwin",
 		"esim_full":             runtime.GOOS == "darwin",
 		"network_policy_native": runtime.GOOS == "darwin",
@@ -1378,6 +1392,37 @@ func (a *app) clearUSBATSMSMemory(memory string) (before, after int, err error) 
 	return before, after, nil
 }
 
+type smsStorageClearResult struct {
+	Memory string `json:"memory"`
+	Before int    `json:"before"`
+	After  int    `json:"after"`
+}
+
+// clearAllUSBATSMS removes messages from both stores surfaced by readUSBATSMS.
+// The previous implementation only cleared ME while the inbox also showed SM,
+// which made a successful delete look like it had done nothing.
+func (a *app) clearAllUSBATSMS() ([]smsStorageClearResult, error) {
+	results := make([]smsStorageClearResult, 0, 2)
+	for _, memory := range []string{"SM", "ME"} {
+		before, after, err := a.clearUSBATSMSMemory(memory)
+		if err != nil {
+			return results, fmt.Errorf("clear %s SMS: %w", memory, err)
+		}
+		results = append(results, smsStorageClearResult{
+			Memory: memory,
+			Before: before,
+			After:  after,
+		})
+	}
+	return results, nil
+}
+
+func (a *app) clearSMSCache() {
+	a.smsMu.Lock()
+	defer a.smsMu.Unlock()
+	a.sms = nil
+}
+
 func parseUSBATCPMSUsed(resp string) int {
 	re := regexp.MustCompile(`\+CPMS:\s*(\d+),`)
 	match := re.FindStringSubmatch(resp)
@@ -1467,6 +1512,61 @@ func (a *app) smsStatus(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (a *app) updateSMSSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AutoCleanupME *bool `json:"auto_cleanup_me"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.AutoCleanupME == nil {
+		writeError(w, http.StatusBadRequest, "auto_cleanup_me is required")
+		return
+	}
+	a.smsOperationMu.Lock()
+	a.smsAutoCleanupME = *body.AutoCleanupME
+	a.smsOperationMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]bool{"auto_cleanup_me": a.smsAutoCleanupME})
+}
+
+func (a *app) simIdentity(w http.ResponseWriter, r *http.Request) {
+	if a.demo {
+		writeJSON(w, http.StatusOK, map[string]string{"phone_number": "+8613800138000"})
+		return
+	}
+	a.smsOperationMu.Lock()
+	defer a.smsOperationMu.Unlock()
+	if err := a.ensureUSBAT(); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	response, err := a.runATCommand("AT+CNUM", 3*time.Second)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"phone_number": parseCNUM(response)})
+}
+
+func parseCNUM(response string) string {
+	for _, line := range strings.Split(response, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(strings.ToUpper(line), "+CNUM:") {
+			continue
+		}
+		fields := strings.Split(strings.TrimSpace(line[len("+CNUM:"):]), ",")
+		if len(fields) < 2 {
+			continue
+		}
+		raw := strings.Trim(strings.TrimSpace(fields[1]), `"`)
+		digits := regexp.MustCompile(`[^0-9+]`).ReplaceAllString(raw, "")
+		if len(strings.TrimPrefix(digits, "+")) >= 5 {
+			return digits
+		}
+	}
+	return ""
+}
+
 func (a *app) refreshSMS(w http.ResponseWriter, _ *http.Request) {
 	if a.demo {
 		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
@@ -1489,7 +1589,7 @@ func (a *app) refreshSMS(w http.ResponseWriter, _ *http.Request) {
 
 func (a *app) clearModuleSMS(w http.ResponseWriter, _ *http.Request) {
 	if a.demo {
-		writeJSON(w, http.StatusOK, map[string]any{"cleared": true, "before": 0, "after": 0})
+		writeJSON(w, http.StatusOK, map[string]any{"cleared": true, "before": 0, "after": 0, "storages": []string{"SM", "ME"}})
 		return
 	}
 	if a.modem != nil {
@@ -1500,16 +1600,27 @@ func (a *app) clearModuleSMS(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "AT serial port is unavailable: "+err.Error())
 		return
 	}
-	before, after, err := a.clearUSBATSMSMemory("ME")
+	a.smsOperationMu.Lock()
+	defer a.smsOperationMu.Unlock()
+	results, err := a.clearAllUSBATSMS()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	before, after := 0, 0
+	for _, result := range results {
+		before += result.Before
+		after += result.After
+	}
+	// The inbox is a local cache so it can continue showing messages after
+	// automatic ME cleanup. A manual delete is explicit, therefore remove the
+	// matching cached view as well instead of making the UI appear unchanged.
+	a.clearSMSCache()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cleared": true,
-		"memory":  "ME",
-		"before":  before,
-		"after":   after,
+		"cleared":  true,
+		"before":   before,
+		"after":    after,
+		"storages": results,
 	})
 }
 

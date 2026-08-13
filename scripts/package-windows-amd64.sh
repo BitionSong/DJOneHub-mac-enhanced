@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${1:-v1.0.0-rc1}
+VERSION=${1:-v1.2.4}
 PACKAGE_NAME="DJOneHub-Windows-amd64-${VERSION}"
 STAGE_ROOT="${ROOT_DIR}/dist/release"
 STAGE_DIR="${STAGE_ROOT}/${PACKAGE_NAME}"
@@ -34,6 +34,11 @@ cp "${ROOT_DIR}/windows/Stop DJOneHub.cmd" "${STAGE_DIR}/Stop DJOneHub.cmd"
 cp "${ROOT_DIR}/windows/README-Windows.txt" "${STAGE_DIR}/README-Windows.txt"
 cp "${ROOT_DIR}/LICENSE" "${STAGE_DIR}/LICENSE"
 cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${STAGE_DIR}/THIRD_PARTY_NOTICES.md"
+
+if find "${STAGE_DIR}" -type f \( -name '*.ko' -o -name '*.armv7' \) | grep -q .; then
+  echo "Public package unexpectedly contains a module-side runtime." >&2
+  exit 1
+fi
 
 rm -f "${ARCHIVE}" "${CHECKSUM}"
 (

@@ -19,14 +19,16 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.2.4</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>13</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSContactsUsageDescription</key>
 	<string>用于在拨号、最近通话和短信中显示联系人姓名，并支持从通讯录直接拨号。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>用于通过已连接的 4G 模块进行双向语音通话。</string>
 </dict>
 </plist>

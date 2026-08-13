@@ -260,8 +260,8 @@ struct DialPadView: View {
             }
             .padding(.top, 10)
 
-            if let error = calls.lastError, !calls.isOnline {
-                Text(L10n.f("无法连接 DJOneHub 后台：%@", error))
+            if let error = calls.lastActionError ?? (!calls.isOnline ? calls.lastError : nil) {
+                Text(calls.lastActionError == nil ? L10n.f("无法连接 DJOneHub 后台：%@", error) : error)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .padding(.horizontal, 20)
@@ -696,7 +696,10 @@ private struct MessagesView: View {
     @State private var loading = false
     @State private var error: String?
     @State private var showingComposer = false
+    @State private var showingClearSMSConfirmation = false
     @State private var composerRecipient = ""
+    @State private var ownNumber = ""
+    @State private var autoCleanupME = true
 
     private var conversations: [Conversation] {
         var latest: [String: (content: String, date: Date)] = [:]
@@ -741,6 +744,11 @@ private struct MessagesView: View {
             HStack(spacing: 12) {
                 Text(L10n.t("短信"))
                     .font(.title3.weight(.semibold))
+                if !ownNumber.isEmpty {
+                    Text(ownNumber)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if let error {
                     Text(error)
@@ -758,13 +766,13 @@ private struct MessagesView: View {
                 .buttonStyle(.plain)
                 .help(L10n.t("撰写新短信"))
                 Button {
-                    Task { await clearModuleSMS() }
+                    showingClearSMSConfirmation = true
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .help(L10n.t("清空模块旧短信"))
+                .help(L10n.t("清空全部短信"))
                 Button {
                     Task { await load() }
                 } label: {
@@ -776,6 +784,16 @@ private struct MessagesView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+
+            Divider()
+
+            Toggle(L10n.t("读取后自动清理模块短信"), isOn: $autoCleanupME)
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .onChange(of: autoCleanupME) { enabled in
+                    Task { try? await calls.apiClient.setSMSAutoCleanup(enabled) }
+                }
 
             Divider()
 
@@ -816,6 +834,8 @@ private struct MessagesView: View {
             }
         }
         .task {
+            if let identity = try? await calls.apiClient.simIdentity() { ownNumber = identity.phoneNumber }
+            if let status = try? await calls.apiClient.smsStatus() { autoCleanupME = status.autoCleanupME }
             while !Task.isCancelled {
                 await load()
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -855,6 +875,14 @@ private struct MessagesView: View {
                 showingComposer = true
             }
         }
+        .alert(L10n.t("清空全部短信？"), isPresented: $showingClearSMSConfirmation) {
+            Button(L10n.t("删除"), role: .destructive) {
+                Task { await clearModuleSMS() }
+            }
+            Button(L10n.t("取消"), role: .cancel) {}
+        } message: {
+            Text(L10n.t("这会删除 SIM 卡和模块存储中的全部短信，无法恢复。"))
+        }
     }
 
     private func load() async {
@@ -872,6 +900,8 @@ private struct MessagesView: View {
         do {
             try await calls.apiClient.clearModuleSMS()
             self.error = nil
+            received = []
+            selected = nil
             await load()
         } catch {
             self.error = error.localizedDescription
@@ -1847,6 +1877,9 @@ private struct SettingsView: View {
                 Text(L10n.t("设置"))
                     .font(.title3.weight(.semibold))
                 Spacer()
+                Text("V1.2.4")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -1857,6 +1890,9 @@ private struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     MoreSectionTitle(L10n.t("状态"))
                     DeviceStatusCard()
+
+                    MoreSectionTitle("模块初始化")
+                    ModuleSetupCard()
 
                     MoreSectionTitle(L10n.t("通用"))
                     VStack(spacing: 0) {
@@ -1939,6 +1975,126 @@ private struct SettingsView: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             NSApp.terminate(nil)
+        }
+    }
+}
+
+private struct ModuleSetupCard: View {
+    @State private var status: ModuleSetupStatus?
+    @State private var isLoading = false
+    @State private var showConfirm = false
+    @State private var errorText: String?
+    private let api = DJOneHubAPI(baseURL: URL(string: "http://127.0.0.1:7575/")!)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: icon)
+                    .foregroundStyle(tint)
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(status?.summary ?? "正在检查模块状态")
+                        .font(.footnote.weight(.semibold))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button {
+                        refresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            if status?.canInitialize == true {
+                Button {
+                    showConfirm = true
+                } label: {
+                    Label("初始化通话能力", systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(isLoading)
+            }
+            if let backup = status?.backupPath, !backup.isEmpty {
+                Text("已备份原始模块配置")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let errorText {
+                Text(errorText)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(12)
+        .modifier(PhoneCard())
+        .task { refresh() }
+        .alert("初始化通话能力？", isPresented: $showConfirm) {
+            Button("初始化", role: .destructive) { initialize() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将备份模块 USB 配置，启用音频接口并重启模块。过程中 4G 会短暂断开；失败时保留回滚备份。")
+        }
+    }
+
+    private var icon: String {
+        switch status?.state {
+        case "ready": return "checkmark.circle.fill"
+        case "needs_initialization": return "sparkles"
+        case "initializing", "restarting", "verifying": return "arrow.triangle.2.circlepath"
+        case "failed", "unsupported": return "exclamationmark.triangle.fill"
+        default: return "antenna.radiowaves.left.and.right"
+        }
+    }
+
+    private var tint: Color {
+        switch status?.state {
+        case "ready": return .green
+        case "failed", "unsupported": return .orange
+        default: return .accentColor
+        }
+    }
+
+    private var detail: String {
+        if let detail = status?.detail, !detail.isEmpty { return detail }
+        return "新模块只需初始化一次；之后直接插入即可使用。"
+    }
+
+    private func refresh() {
+        guard !isLoading else { return }
+        isLoading = true
+        errorText = nil
+        Task {
+            do {
+                let next = try await api.moduleSetupStatus()
+                await MainActor.run { status = next; isLoading = false }
+            } catch {
+                await MainActor.run { errorText = error.localizedDescription; isLoading = false }
+            }
+        }
+    }
+
+    private func initialize() {
+        isLoading = true
+        errorText = nil
+        Task {
+            do {
+                let next = try await api.initializeModule()
+                await MainActor.run { status = next; isLoading = false }
+                try? await Task.sleep(for: .seconds(4))
+                await MainActor.run { refresh() }
+            } catch {
+                await MainActor.run { errorText = error.localizedDescription; isLoading = false }
+            }
         }
     }
 }

@@ -24,6 +24,3 @@ backups/
 
 # Frontend dependencies are not used by the native DJOneHub page
 node_modules/
-# Never add non-public module-side voice runtime assets to this repository.
-cmd/djonehub-macos/voice_runtime/
-cmd/djonehub-macos/module_voice_private.go

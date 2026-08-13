@@ -3,71 +3,102 @@
 package main
 
 /*
-#cgo LDFLAGS: -framework CoreAudio -framework AudioToolbox -framework CoreFoundation
+#cgo LDFLAGS: -framework CoreAudio -framework AudioToolbox -framework CoreFoundation -framework Foundation -framework AVFoundation -framework IOKit
 #include <AudioToolbox/AudioToolbox.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
 
+void *dj_mavo_uac_bridge_start(void *context, uint16_t vendor, uint16_t product,
+                               uint32_t location, char *error, size_t error_capacity);
+void dj_mavo_uac_bridge_stop(void *bridge);
+void dj_mavo_uac_bridge_set_muted(void *bridge, int muted);
+int dj_mavo_uac_bridge_running(void *bridge);
+void dj_mavo_uac_bridge_stats(void *bridge, uint64_t *input_callbacks,
+                              uint64_t *output_callbacks, uint64_t *input_frames,
+                              uint64_t *output_frames);
+const char *dj_mavo_uac_bridge_name(void *bridge);
+
 static int make_conv(const AudioStreamBasicDescription *src,
                      const AudioStreamBasicDescription *dst,
                      AudioConverterRef *out);
 
-// ---- byte ring buffer (trylock; drop on contention to keep audio procs fast) ----
+// ---- byte ring buffer (bounded, lock-free SPSC) ----
+//
+// Each live call path has one producer and one consumer. Using a mutex in an
+// AudioDeviceIOProc means an unrelated recorder/playback callback can block a
+// hardware callback long enough to turn into an audible burst. Keep ownership
+// strict and drop newest data on producer overflow; silence is preferable to
+// waiting in a real-time callback.
 typedef struct {
 	uint8_t *buf;
 	size_t   cap;
-	size_t   head;
-	size_t   tail;
-	pthread_mutex_t mu;
+	_Atomic uint64_t read_pos;
+	_Atomic uint64_t write_pos;
+	_Atomic uint64_t dropped;
 } ringbuf;
 
 static void rb_init(ringbuf *r, size_t cap) {
 	r->buf = (uint8_t *)malloc(cap);
 	r->cap = cap;
-	r->head = 0;
-	r->tail = 0;
-	pthread_mutex_init(&r->mu, NULL);
+	atomic_init(&r->read_pos, 0);
+	atomic_init(&r->write_pos, 0);
+	atomic_init(&r->dropped, 0);
 }
 
 static size_t rb_used(ringbuf *r) {
-	if (r->head >= r->tail) return r->head - r->tail;
-	return r->cap - (r->tail - r->head);
+	if (!r || r->cap == 0) return 0;
+	uint64_t write_pos = atomic_load_explicit(&r->write_pos, memory_order_acquire);
+	uint64_t read_pos = atomic_load_explicit(&r->read_pos, memory_order_acquire);
+	uint64_t used = write_pos - read_pos;
+	return used > r->cap ? r->cap : (size_t)used;
 }
 
 static size_t rb_write(ringbuf *r, const uint8_t *data, size_t n) {
-	if (pthread_mutex_trylock(&r->mu) != 0) return 0;
-	size_t used = rb_used(r);
-	size_t free_space = r->cap - 1 - used;
-	if (n > free_space) n = free_space;
-	for (size_t i = 0; i < n; i++) {
-		r->buf[r->head] = data[i];
-		r->head = (r->head + 1) % r->cap;
+	if (!r || !r->buf || !data || r->cap == 0 || n == 0) return 0;
+	uint64_t write_pos = atomic_load_explicit(&r->write_pos, memory_order_relaxed);
+	uint64_t read_pos = atomic_load_explicit(&r->read_pos, memory_order_acquire);
+	uint64_t used = write_pos - read_pos;
+	if (used > r->cap) used = r->cap;
+	size_t accepted = n < (r->cap - (size_t)used) ? n : r->cap - (size_t)used;
+	if (accepted == 0) {
+		atomic_fetch_add_explicit(&r->dropped, n, memory_order_relaxed);
+		return 0;
 	}
-	pthread_mutex_unlock(&r->mu);
-	return n;
+	size_t offset = (size_t)(write_pos % r->cap);
+	size_t first = accepted < r->cap - offset ? accepted : r->cap - offset;
+	memcpy(r->buf + offset, data, first);
+	if (accepted > first) memcpy(r->buf, data + first, accepted - first);
+	atomic_store_explicit(&r->write_pos, write_pos + accepted, memory_order_release);
+	if (accepted < n) atomic_fetch_add_explicit(&r->dropped, n - accepted, memory_order_relaxed);
+	return accepted;
 }
 
 static size_t rb_read(ringbuf *r, uint8_t *out, size_t n) {
-	pthread_mutex_lock(&r->mu);
-	size_t used = rb_used(r);
-	if (n > used) n = used;
-	for (size_t i = 0; i < n; i++) {
-		out[i] = r->buf[r->tail];
-		r->tail = (r->tail + 1) % r->cap;
-	}
-	pthread_mutex_unlock(&r->mu);
-	return n;
+	if (!r || !r->buf || !out || r->cap == 0 || n == 0) return 0;
+	uint64_t read_pos = atomic_load_explicit(&r->read_pos, memory_order_relaxed);
+	uint64_t write_pos = atomic_load_explicit(&r->write_pos, memory_order_acquire);
+	uint64_t available64 = write_pos - read_pos;
+	if (available64 > r->cap) available64 = r->cap;
+	size_t copied = n < (size_t)available64 ? n : (size_t)available64;
+	size_t offset = (size_t)(read_pos % r->cap);
+	size_t first = copied < r->cap - offset ? copied : r->cap - offset;
+	memcpy(out, r->buf + offset, first);
+	if (copied > first) memcpy(out + first, r->buf, copied - first);
+	atomic_store_explicit(&r->read_pos, read_pos + copied, memory_order_release);
+	return copied;
 }
 
+// Only call while the producer is stopped (recording/session boundary).
 static void rb_clear(ringbuf *r) {
-	pthread_mutex_lock(&r->mu);
-	r->head = 0;
-	r->tail = 0;
-	pthread_mutex_unlock(&r->mu);
+	if (!r) return;
+	uint64_t write_pos = atomic_load_explicit(&r->write_pos, memory_order_acquire);
+	atomic_store_explicit(&r->read_pos, write_pos, memory_order_release);
+	atomic_store_explicit(&r->dropped, 0, memory_order_relaxed);
 }
 
 // 4th-order Butterworth LPF state (two biquads in series), used on the far
@@ -78,8 +109,8 @@ typedef struct { bq_state st[2]; float b0, b1, b2, a1, a2; } lpf4_state;
 
 // ---- call recorder ----
 typedef struct {
-	int on;
-	int threadRun;
+	_Atomic int on;
+	_Atomic int threadRun;
 	int err;
 	UInt32 nearCorruptBlocks;
 	FILE *file;
@@ -140,9 +171,9 @@ static void *rec_thread(void *arg) {
 	float farBuf[800];
 	float nearBuf[800];
 	int16_t stereo[2 * 800];
-	while (rc->threadRun) {
+	while (atomic_load_explicit(&rc->threadRun, memory_order_acquire)) {
 		usleep(20000);
-		if (!rc->on) continue;
+		if (!atomic_load_explicit(&rc->on, memory_order_acquire)) continue;
 		size_t nFar = rb_read(&rc->farRec, (uint8_t *)farBuf, sizeof(farBuf)) / sizeof(float);
 		if (nFar < 80) continue;
 		memset(nearBuf, 0, sizeof(nearBuf));
@@ -162,7 +193,7 @@ static void *rec_thread(void *arg) {
 			stereo[2 * i + 1] = (int16_t)lrintf(near * 32767.0f);
 		}
 		size_t bytes = nFar * 2 * sizeof(int16_t);
-		if (fwrite(stereo, 1, bytes, rc->file) != bytes) { rc->err = 1; rc->on = 0; break; }
+		if (fwrite(stereo, 1, bytes, rc->file) != bytes) { rc->err = 1; atomic_store_explicit(&rc->on, 0, memory_order_release); break; }
 		rc->wavBytes += (UInt32)bytes;
 	}
 	return NULL;
@@ -195,6 +226,19 @@ typedef struct {
 	AudioConverterRef convToFar16;  // int16 modInFmt -> farFmt (auto-detected)
 	AudioConverterRef convToNear;   // macInFmt -> nearFmt
 	AudioConverterRef convModOut;   // nearFmt -> modOutFmt
+	// The module exposes native 8 kHz float mono on healthy firmware. Keep that
+	// path converter-free: a same-rate converter adds no value but still runs in
+	// the real-time callback and can add scheduling noise on USB UAC devices.
+	int modInDirect;
+	int modOutDirect;
+	// Scratch buffers are allocated once during startup. Audio callbacks must
+	// never malloc/free: the allocator can block behind unrelated work and shows
+	// up as intermittent buzz or bursts on the narrowband UAC stream.
+	uint8_t *farCaptureWork;
+	uint8_t *nearCaptureWork;
+	uint8_t *nearOutWork;
+	size_t captureWorkCap;
+	size_t nearOutWorkCap;
 	int modInIs16;                  // module input currently decoded as 16-bit PCM
 	long long modInLastHost;        // last modIn callback host time (actual-rate probe)
 	double   modInMeasured;         // smoothed measured input rate (Hz)
@@ -217,8 +261,9 @@ typedef struct {
 	AudioDeviceIOProcID modOutProc;
 	AudioDeviceIOProcID macInProc;
 	AudioDeviceIOProcID macOutProc;
-	AudioConverterRef   convMacOut;    // fixed farFmt(8k float32 mono) -> macOutFmt (device rate)
-	AudioQueueRef        macQueue;      // system mixer output for the far path
+	AudioConverterRef   convMacOut;    // legacy device-rate path; normally unused
+	AudioQueueRef        macQueue;      // native 8 kHz stream to the system mixer
+	void                *mavoBridge;    // MaVo-compatible UAC + AVAudioEngine route
 
 	float farPeak;
 	float nearPeak;
@@ -253,8 +298,6 @@ typedef struct {
 	float farOutLive;
 	float nearOutLive;
 	char  fmtInfo[512];
-	FILE *farPreFp;      // debug: DJONEHUB_FAR_PRE_DUMP=<path> dumps pre-filter far float32
-	int   farDump;       // 1 while farPreFp is open
 	recorder rec;
 } router;
 
@@ -287,6 +330,14 @@ static void fmt_int16(AudioStreamBasicDescription *f, Float64 rate) {
 	f->mBytesPerFrame = 2;
 	f->mFramesPerPacket = 1;
 	f->mBytesPerPacket = 2;
+}
+
+static int fmt_is_native_8k_float_mono(const AudioStreamBasicDescription *f) {
+	return f && f->mSampleRate == 8000.0 &&
+		f->mFormatID == kAudioFormatLinearPCM &&
+		(f->mFormatFlags & kAudioFormatFlagIsFloat) &&
+		f->mChannelsPerFrame == 1 && f->mBitsPerChannel == 32 &&
+		f->mBytesPerFrame == sizeof(float) && f->mBytesPerPacket == sizeof(float);
 }
 
 // Converter input proc: pull from a fixed source buffer.
@@ -359,11 +410,9 @@ static float lp1(float x, float *x1, float *y1, float a) {
 // one-poles have real poles only — zero ringing — so 3-4 kHz rolls off cleanly
 // while 1-2 kHz speech stays untouched.
 
-// The far path is a pure passthrough now (CellDock "original" = no filtering).
-// The old chain — HP/LP pair/notch/Butterworth with coefficients regenerated at
-// the servoed farFmt — is removed along with the servo itself: the system mixer
-// does the SRC and the clock adaptation, and no filter was ever the 滋滋's true
-// cause (that was the saturating ring, see far_watermark_ctl).
+// The legacy far filter remains an experiment and is not treated as the cause
+// of call noise. The active migration first removes real-time lock contention
+// and multi-second buffering; any DSP adjustment requires a matched A/B test.
 
 // Voice-band (300-3400 Hz) filter chain: HPF then LPF. This removes mains
 // hum, DC offset and broadband hiss from the module's noisy USB audio path so
@@ -487,7 +536,8 @@ static void zero_output(AudioBufferList *outData) {
 static void capture_to_ring(AudioConverterRef conv, AudioConverterRef conv16,
                             const void *srcData, size_t srcBytes,
                             AudioStreamBasicDescription srcFmt,
-                            ringbuf *ring, float *peak, int *is16) {
+	                            ringbuf *ring, float *peak, int *is16,
+	                            int directFloat, uint8_t *work, size_t workCap) {
 	if (srcFmt.mBitsPerChannel == 32 && (srcFmt.mFormatFlags & kAudioFormatFlagIsFloat) && conv16 != NULL) {
 		const float *f = (const float *)srcData;
 		size_t nf = srcBytes / 4;
@@ -524,6 +574,13 @@ static void capture_to_ring(AudioConverterRef conv, AudioConverterRef conv16,
 		float p = peak32f((const float *)srcData, srcBytes / 4);
 		if (p > *peak) *peak = p;
 	}
+	// Native QDC507 Float32/8 kHz/mono needs no conversion at all. This is the
+	// same PCM representation used by the far ring, so copy it directly.
+	if (directFloat && fmt_is_native_8k_float_mono(&srcFmt)) {
+		rb_write(ring, (const uint8_t *)srcData, srcBytes);
+		return;
+	}
+	if (!conv || !work || workCap < sizeof(float)) return;
 	UInt32 packets = (UInt32)(srcBytes / srcFmt.mBytesPerPacket);
 	if (packets == 0) return;
 	src_pull_ctx ctx;
@@ -531,46 +588,21 @@ static void capture_to_ring(AudioConverterRef conv, AudioConverterRef conv16,
 	ctx.len = srcBytes;
 	ctx.off = 0;
 	ctx.fmt = srcFmt;
-	UInt32 framesPerChunk = 2048;
-	size_t dstBytes = framesPerChunk * sizeof(float);
-	uint8_t *dst = (uint8_t *)malloc(dstBytes);
+	UInt32 framesPerChunk = (UInt32)(workCap / sizeof(float));
+	if (framesPerChunk > 2048) framesPerChunk = 2048;
+	if (framesPerChunk == 0) return;
+	size_t dstBytes = (size_t)framesPerChunk * sizeof(float);
 	for (;;) {
 		AudioBufferList dstBuf;
 		dstBuf.mNumberBuffers = 1;
-		dstBuf.mBuffers[0].mData = dst;
+		dstBuf.mBuffers[0].mData = work;
 		dstBuf.mBuffers[0].mDataByteSize = (UInt32)dstBytes;
 		dstBuf.mBuffers[0].mNumberChannels = 1;
 		UInt32 framesThis = framesPerChunk;
 		OSStatus st = AudioConverterFillComplexBuffer(conv, src_pull_proc, &ctx, &framesThis, &dstBuf, NULL);
 		(void)st;
-		rb_write(ring, dst, (size_t)framesThis * sizeof(float));
+		rb_write(ring, work, (size_t)framesThis * sizeof(float));
 		if (framesThis < framesPerChunk) break;
-	}
-	free(dst);
-}
-
-// far_watermark_ctl: CellDock-style far-rate handling. CellDock does NOT
-// resample or servo the far path — it hands 8 kHz PCM16 to the system mixer
-// and lets coreaudiod's own clock adaptation absorb any drift. That is exactly
-// what we do now too: macOut plays the far ring through an AudioQueue at a
-// fixed 8 kHz, and the system mixer does the SRC to the device's real rate and
-// the clock sync. No farFmt servo, no converter rebuilds, no drain-rate
-// measurement (the old one locked to 38-46 kHz noise from USB burst scheduling
-// while the device truly ran at 48 kHz — that mismatch is what saturated the
-// ring and resynced ~1.6 s of audio per drop = the 滋滋).
-//
-// The only thing left here is the CellDock stream resynchronization: a startup
-// pre-roll or a temporary module burst can still back the ring up, and seconds
-// of stale audio are worse than one small gap, so we drop the backlog once it
-// crosses ~60% of capacity. farWmLvl keeps a smoothed readout for diagnostics.
-static void far_watermark_ctl(router *r) {
-	size_t used = rb_used(&r->farRing);
-	if (used > (size_t)(r->farRing.cap * 0.6)) {
-		rb_clear(&r->farRing);
-		r->farWmLvl = 0;
-		fprintf(stderr, "voice resync: dropped %u bytes of saturated far ring\n", (unsigned)used);
-	} else {
-		r->farWmLvl = r->farWmLvl * 0.92f + (float)used * 0.08f;
 	}
 }
 
@@ -583,11 +615,12 @@ static OSStatus modIn_proc(AudioDeviceID dev, const AudioTimeStamp *now,
 	r->modInCalls++;
 	if (!inData || inData->mNumberBuffers == 0 || !inData->mBuffers[0].mData) return noErr;
 	const AudioBuffer *b = &inData->mBuffers[0];
-	// CellDock-style far-rate handling: feed the far ring at a fixed 8 kHz and
-	// let far_watermark_ctl's saturation resync drop any backlog. The system
-	// mixer (AudioQueue) absorbs the clock drift; no servo, no converter rebuilds.
-	far_watermark_ctl(r);
-	capture_to_ring(r->convToFar, r->convToFar16, b->mData, b->mDataByteSize, r->modInFmt, &r->farRing, &r->farPeak, &r->modInIs16);
+	// Bounded SPSC ring: producer overflow drops only the newest frames. This
+	// avoids both lock waits and the old multi-second backlog-resync behaviour.
+	r->farWmLvl = r->farWmLvl * 0.92f + (float)rb_used(&r->farRing) * 0.08f;
+	capture_to_ring(r->convToFar, r->convToFar16, b->mData, b->mDataByteSize, r->modInFmt,
+	                &r->farRing, &r->farPeak, &r->modInIs16, r->modInDirect,
+	                r->farCaptureWork, r->captureWorkCap);
 	{
 		float p = r->modInIs16 ? peak16((const int16_t *)b->mData, b->mDataByteSize / 2)
 		                       : peak32f((const float *)b->mData, b->mDataByteSize / 4);
@@ -625,7 +658,9 @@ static OSStatus macIn_proc(AudioDeviceID dev, const AudioTimeStamp *now,
 		if (p > r->nearLive) r->nearLive = p;
 		else r->nearLive *= 0.92f;
 	}
-	capture_to_ring(r->convToNear, NULL, b->mData, b->mDataByteSize, r->macInFmt, &r->nearRing, &r->nearPeak, NULL);
+	capture_to_ring(r->convToNear, NULL, b->mData, b->mDataByteSize, r->macInFmt,
+	                &r->nearRing, &r->nearPeak, NULL, 0,
+	                r->nearCaptureWork, r->captureWorkCap);
 	return noErr;
 }
 
@@ -653,9 +688,10 @@ static OSStatus macOut_pull_proc(AudioConverterRef inConverter, UInt32 *ioNumber
 		memset(dst + got, 0, want - got);
 		ctx->r->macOutUnderruns++;
 	}
-	if (ctx->r->farDump && ctx->r->farPreFp) fwrite(dst, 1, want, ctx->r->farPreFp);   // raw far (diagnostic)
+	// Debug PCM export is intentionally disabled here: disk I/O in this callback
+	// can block the shared mixer and create the very burst we are measuring.
 	process_far_block((float *)dst, frames, ctx->r);
-	if (ctx->r->rec.on) rb_write(&ctx->r->rec.farRec, dst, want);
+	if (atomic_load_explicit(&ctx->r->rec.on, memory_order_acquire)) rb_write(&ctx->r->rec.farRec, dst, want);
 	ioData->mBuffers[0].mDataByteSize = (UInt32)want;
 	ioData->mBuffers[0].mNumberChannels = 1;
 	*ioNumberDataPackets = frames;
@@ -692,12 +728,11 @@ static OSStatus macOut_proc(AudioDeviceID dev, const AudioTimeStamp *now,
 	return noErr;
 }
 
-// AudioQueue stays on macOS's shared output mixer, but receives native output
-// frames. The 8 kHz module stream is explicitly converted with our Normal / Max
-// quality AudioConverter first; leaving this conversion implicit in AudioQueue
-// was the last source of audible alias-like hiss on Studio Display.
+// Hand the original 8 kHz mono stream to the macOS shared mixer. This lets
+// CoreAudio own the output-device clock and SRC, rather than running a second
+// app-side resampler before AudioQueue (the remaining mismatch with CellDock).
 static void mac_queue_fill(AudioQueueRef queue, AudioQueueBufferRef buffer, router *r) {
-	UInt32 outFrames = buffer->mAudioDataBytesCapacity / r->macOutFmt.mBytesPerFrame;
+	UInt32 outFrames = buffer->mAudioDataBytesCapacity / r->farFmt.mBytesPerFrame;
 	memset(buffer->mAudioData, 0, buffer->mAudioDataBytesCapacity);
 	far_pull_ctx ctx;
 	ctx.ring = &r->farRing;
@@ -705,15 +740,11 @@ static void mac_queue_fill(AudioQueueRef queue, AudioQueueBufferRef buffer, rout
 	UInt32 framesThis = outFrames;
 	AudioBufferList out;
 	out.mNumberBuffers = 1;
-	out.mBuffers[0].mNumberChannels = r->macOutFmt.mChannelsPerFrame;
+	out.mBuffers[0].mNumberChannels = 1;
 	out.mBuffers[0].mDataByteSize = buffer->mAudioDataBytesCapacity;
 	out.mBuffers[0].mData = buffer->mAudioData;
-	OSStatus st = AudioConverterFillComplexBuffer(r->convMacOut, macOut_pull_proc, &ctx,
-	                                                &framesThis, &out, NULL);
-	if (st != noErr && (r->macOutCalls & 1023) == 0) {
-		fprintf(stderr, "voice macQueue conv: st=%d frames=%u\n", (int)st, (unsigned)framesThis);
-	}
-	buffer->mAudioDataByteSize = out.mBuffers[0].mDataByteSize;
+	macOut_pull_proc(NULL, &framesThis, &out, NULL, &ctx);
+	buffer->mAudioDataByteSize = (UInt32)((size_t)framesThis * sizeof(float));
 	r->macOutCalls++;
 	AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
 }
@@ -729,16 +760,16 @@ static void mac_queue_proc(void *userData, AudioQueueRef queue, AudioQueueBuffer
 	mac_queue_fill(queue, buffer, r);
 }
 
-// Create the shared system-mixer output path in the current native device
-// format. We never take exclusive ownership of Studio Display's hardware.
+// Create a native 8 kHz shared-mixer path. CoreAudio adapts this to whatever
+// sample rate the selected output device currently uses.
 static int mac_out_start(router *r) {
-	OSStatus st = AudioQueueNewOutput(&r->macOutFmt, mac_queue_proc, r, NULL, NULL, 0, &r->macQueue);
+	OSStatus st = AudioQueueNewOutput(&r->farFmt, mac_queue_proc, r, NULL, NULL, 0, &r->macQueue);
 	if (st != noErr) { fprintf(stderr, "mac_out_start: AudioQueueNewOutput failed: %d\n", (int)st); return (int)st; }
-	// Three 20 ms native buffers: enough for Studio Display's callback bursts,
-	// while retaining low enough latency for the near-side echo suppressor.
+	// Three 20 ms 8 kHz buffers keep latency low while giving the shared mixer
+	// enough runway for normal callback jitter.
 	for (int i = 0; i < 3; i++) {
 		AudioQueueBufferRef buffer = NULL;
-		st = AudioQueueAllocateBuffer(r->macQueue, 960 * r->macOutFmt.mBytesPerFrame, &buffer);
+		st = AudioQueueAllocateBuffer(r->macQueue, 160 * r->farFmt.mBytesPerFrame, &buffer);
 		if (st != noErr || !buffer) { fprintf(stderr, "mac_out_start: AudioQueueAllocateBuffer failed: %d\n", (int)st); AudioQueueDispose(r->macQueue, true); r->macQueue = NULL; return (int)st; }
 		mac_queue_fill(r->macQueue, buffer, r);
 	}
@@ -775,21 +806,30 @@ static OSStatus modOut_proc(AudioDeviceID dev, const AudioTimeStamp *now,
 	}
 	UInt32 frames = buffer_frames(&outData->mBuffers[0], &r->modOutFmt);
 	size_t wantBytes = (size_t)frames * sizeof(float);
-	uint8_t *canon = (uint8_t *)malloc(wantBytes ? wantBytes : 1);
+	if (!r->nearOutWork || wantBytes > r->nearOutWorkCap) {
+		zero_output(outData);
+		return noErr;
+	}
+	uint8_t *canon = r->nearOutWork;
 	size_t got = rb_read(&r->nearRing, canon, wantBytes);
 	if (got < wantBytes) memset(canon + got, 0, wantBytes - got);
 	process_near_block((float *)canon, frames, r);
-	if (r->rec.on) rb_write(&r->rec.nearRec, canon, wantBytes);
+	if (atomic_load_explicit(&r->rec.on, memory_order_acquire)) rb_write(&r->rec.nearRec, canon, wantBytes);
+	zero_output(outData);
+	if (r->modOutDirect) {
+		AudioBuffer *dst = &outData->mBuffers[0];
+		size_t copy = wantBytes < dst->mDataByteSize ? wantBytes : dst->mDataByteSize;
+		memcpy(dst->mData, canon, copy);
+		return noErr;
+	}
 	src_pull_ctx ctx;
 	ctx.data = canon;
 	ctx.len = wantBytes;
 	ctx.off = 0;
 	ctx.fmt = r->nearFmt;
 	UInt32 framesThis = frames;
-	zero_output(outData);
 	OSStatus st = AudioConverterFillComplexBuffer(r->convModOut, src_pull_proc, &ctx, &framesThis, outData, NULL);
 	(void)st;
-	free(canon);
 	return noErr;
 }
 
@@ -1015,22 +1055,9 @@ static int make_conv(const AudioStreamBasicDescription *src, const AudioStreamBa
 
 // ---- lifecycle ----
 static int router_rec_start(router *r, const char *path) {
-	if (r->rec.on) return 1;
-	if (r->farDump) {
-		// Close any leftover debug dump from a previous recording.
-		fclose(r->farPreFp);
-		r->farPreFp = NULL;
-		r->farDump = 0;
-	}
+	if (atomic_load_explicit(&r->rec.on, memory_order_acquire)) return 1;
 	const char *preDump = getenv("DJONEHUB_FAR_PRE_DUMP");
-	if (preDump && *preDump) {
-		r->farPreFp = fopen(preDump, "wb");
-		if (r->farPreFp) {
-			setvbuf(r->farPreFp, NULL, _IONBF, 0);  // unbuffered so a crash won't lose data
-			r->farDump = 1;
-			fprintf(stderr, "far pre-filter dump on: %s\n", preDump);
-		}
-	}
+	if (preDump && *preDump) fprintf(stderr, "far pre-filter dump disabled during real-time routing\n");
 	FILE *file = fopen(path, "wb");
 	if (!file || rec_wav_header(file, 0) != 0) {
 		if (file) fclose(file);
@@ -1042,9 +1069,9 @@ static int router_rec_start(router *r, const char *path) {
 	r->rec.wavBytes = 0;
 	r->rec.err = 0;
 	r->rec.nearCorruptBlocks = 0;
-	r->rec.on = 1;
-	if (!r->rec.threadRun) {
-		r->rec.threadRun = 1;
+	atomic_store_explicit(&r->rec.on, 1, memory_order_release);
+	if (!atomic_load_explicit(&r->rec.threadRun, memory_order_acquire)) {
+		atomic_store_explicit(&r->rec.threadRun, 1, memory_order_release);
 		pthread_create(&r->rec.thread, NULL, rec_thread, &r->rec);
 	}
 	return 0;
@@ -1052,9 +1079,9 @@ static int router_rec_start(router *r, const char *path) {
 
 static void router_rec_stop(router *r) {
 	if (!r) return;
-	r->rec.on = 0;
-	if (r->rec.threadRun) {
-		r->rec.threadRun = 0;
+	atomic_store_explicit(&r->rec.on, 0, memory_order_release);
+	if (atomic_load_explicit(&r->rec.threadRun, memory_order_acquire)) {
+		atomic_store_explicit(&r->rec.threadRun, 0, memory_order_release);
 		pthread_join(r->rec.thread, NULL);
 	}
 	if (r->rec.file) {
@@ -1062,21 +1089,76 @@ static void router_rec_stop(router *r) {
 		fclose(r->rec.file);
 		r->rec.file = NULL;
 	}
-	if (r->farDump) {
-		fclose(r->farPreFp);
-		r->farPreFp = NULL;
-		r->farDump = 0;
-	}
 }
 
 static int router_rec_on(router *r) {
 	if (!r) return 0;
-	return r->rec.on;
+	return atomic_load_explicit(&r->rec.on, memory_order_acquire);
 }
 
-static router *router_start(void) {
+// Called from the non-realtime MaVo bridge pump/capture queues. The UAC
+// callbacks themselves only touch the bounded PCM16 SPSC rings in
+// mavo_uac_probe.c, matching the verified reference architecture.
+void dj_router_record_far_pcm16(void *context, const int16_t *samples, size_t frames) {
+	router *r = (router *)context;
+	if (!r || !samples || frames == 0) return;
+	float converted[512];
+	while (frames > 0) {
+		size_t count = frames > 512 ? 512 : frames;
+		float peak = 0.0f;
+		for (size_t i = 0; i < count; i++) {
+			converted[i] = (float)samples[i] / 32768.0f;
+			float level = fabsf(converted[i]);
+			if (level > peak) peak = level;
+		}
+		if (atomic_load_explicit(&r->rec.on, memory_order_acquire)) {
+			rb_write(&r->rec.farRec, (const uint8_t *)converted, count * sizeof(float));
+		}
+		if (peak > r->farPeak) r->farPeak = peak;
+		r->farLive = peak;
+		r->farOutLive = peak;
+		r->modInCalls++;
+		r->macOutCalls++;
+		samples += count;
+		frames -= count;
+	}
+}
+
+int dj_router_recording_active(void *context) {
+	router *r = (router *)context;
+	return r && atomic_load_explicit(&r->rec.on, memory_order_acquire);
+}
+
+void dj_router_record_near_pcm16(void *context, const int16_t *samples, size_t frames) {
+	router *r = (router *)context;
+	if (!r || !samples || frames == 0) return;
+	float converted[512];
+	while (frames > 0) {
+		size_t count = frames > 512 ? 512 : frames;
+		float peak = 0.0f;
+		for (size_t i = 0; i < count; i++) {
+			converted[i] = (float)samples[i] / 32768.0f;
+			float level = fabsf(converted[i]);
+			if (level > peak) peak = level;
+		}
+		if (atomic_load_explicit(&r->rec.on, memory_order_acquire)) {
+			rb_write(&r->rec.nearRec, (const uint8_t *)converted, count * sizeof(float));
+		}
+		if (peak > r->nearPeak) r->nearPeak = peak;
+		r->nearLive = peak;
+		r->nearOutLive = peak;
+		r->macInCalls++;
+		r->modOutCalls++;
+		samples += count;
+		frames -= count;
+	}
+}
+
+static router *router_start_legacy(void) {
 	router *r = (router *)calloc(1, sizeof(router));
 	if (!r) return NULL;
+	atomic_init(&r->rec.on, 0);
+	atomic_init(&r->rec.threadRun, 0);
 	r->modIn = find_module_device(1);
 	r->modOut = find_module_device(0);
 	r->macIn = get_mac_default_device(kAudioHardwarePropertyDefaultInputDevice, kAudioDevicePropertyScopeInput);
@@ -1128,25 +1210,42 @@ static router *router_start(void) {
 		modInActual, macOutActual);
 	fmt_float(&r->farFmt, 8000, 1);
 	fmt_float(&r->nearFmt, 8000, 1);
+	r->modInDirect = fmt_is_native_8k_float_mono(&r->modInFmt);
+	r->modOutDirect = fmt_is_native_8k_float_mono(&r->modOutFmt);
 	AudioStreamBasicDescription modInFmt16;
 	fmt_int16(&modInFmt16, r->modInFmt.mSampleRate > 0 ? r->modInFmt.mSampleRate : 8000);
-	if (make_conv(&r->modInFmt, &r->farFmt, &r->convToFar) != 0 ||
+	if ((!r->modInDirect && make_conv(&r->modInFmt, &r->farFmt, &r->convToFar) != 0) ||
 	    make_conv(&modInFmt16, &r->farFmt, &r->convToFar16) != 0 ||
 	    make_conv(&r->macInFmt, &r->nearFmt, &r->convToNear) != 0 ||
-	    make_conv(&r->nearFmt, &r->modOutFmt, &r->convModOut) != 0 ||
-	    make_conv(&r->farFmt, &r->macOutFmt, &r->convMacOut) != 0) {
+	    (!r->modOutDirect && make_conv(&r->nearFmt, &r->modOutFmt, &r->convModOut) != 0)) {
 		router_set_err(r, "创建音频转换器失败");
 		router_stop(r);
 		free(r);
 		return NULL;
 	}
-	rb_init(&r->farRing, 512 * 1024);
-	rb_init(&r->nearRing, 64 * 1024);
+	// 256 ms at 8 kHz Float32, matching the bounded UAC bridge used by MaVo.
+	// Keeping this short prevents stale voice from ever accumulating behind a
+	// callback jitter event; overflow becomes a short silence instead.
+	rb_init(&r->farRing, 2048 * sizeof(float));
+	rb_init(&r->nearRing, 2048 * sizeof(float));
 	rb_init(&r->rec.farRec, 512 * 1024);
 	rb_init(&r->rec.nearRec, 64 * 1024);
+	r->captureWorkCap = 64 * 1024;
+	r->nearOutWorkCap = 64 * 1024;
+	r->farCaptureWork = (uint8_t *)malloc(r->captureWorkCap);
+	r->nearCaptureWork = (uint8_t *)malloc(r->captureWorkCap);
+	r->nearOutWork = (uint8_t *)malloc(r->nearOutWorkCap);
+	if (!r->farCaptureWork || !r->nearCaptureWork || !r->nearOutWork) {
+		router_set_err(r, "分配音频工作缓冲失败");
+		router_stop(r);
+		free(r);
+		return NULL;
+	}
+	fprintf(stderr, "voice module native path: input=%s output=%s; callback buffers preallocated\n",
+	        r->modInDirect ? "direct" : "converter", r->modOutDirect ? "direct" : "converter");
 	r->farGain = 0.45f;
 	lpf4_init(&r->farLpf, 3000.0f, 8000.0f);
-	fprintf(stderr, "far chain ready: 8k -> LPF@3000 (linear 4th Butter) -> gain=%.2f -> IOProc 6:1 SRC\n",
+	fprintf(stderr, "far chain ready: 8k -> LPF@3000 (linear 4th Butter) -> gain=%.2f -> CoreAudio shared mixer\n",
 	        r->farGain);
 	r->nearGain = 0.7f;
 	r->farGateThresh = 0.004f;
@@ -1168,6 +1267,15 @@ static router *router_start(void) {
 
 static void router_stop(router *r) {
 	if (!r) return;
+	if (r->mavoBridge) {
+		dj_mavo_uac_bridge_stop(r->mavoBridge);
+		r->mavoBridge = NULL;
+		router_rec_stop(r);
+		if (r->rec.farRec.buf) { free(r->rec.farRec.buf); r->rec.farRec.buf = NULL; }
+		if (r->rec.nearRec.buf) { free(r->rec.nearRec.buf); r->rec.nearRec.buf = NULL; }
+		r->running = 0;
+		return;
+	}
 	if (r->modInProc) { AudioDeviceStop(r->modIn, r->modInProc); AudioDeviceDestroyIOProcID(r->modIn, r->modInProc); r->modInProc = NULL; }
 	if (r->modOutProc) { AudioDeviceStop(r->modOut, r->modOutProc); AudioDeviceDestroyIOProcID(r->modOut, r->modOutProc); r->modOutProc = NULL; }
 	if (r->macInProc) { AudioDeviceStop(r->macIn, r->macInProc); AudioDeviceDestroyIOProcID(r->macIn, r->macInProc); r->macInProc = NULL; }
@@ -1176,6 +1284,9 @@ static void router_stop(router *r) {
 	if (r->convToFar16) AudioConverterDispose(r->convToFar16);
 	if (r->convToNear) AudioConverterDispose(r->convToNear);
 	if (r->convModOut) AudioConverterDispose(r->convModOut);
+	if (r->farCaptureWork) free(r->farCaptureWork);
+	if (r->nearCaptureWork) free(r->nearCaptureWork);
+	if (r->nearOutWork) free(r->nearOutWork);
 	if (r->farRing.buf) free(r->farRing.buf);
 	if (r->nearRing.buf) free(r->nearRing.buf);
 	router_rec_stop(r);
@@ -1185,8 +1296,42 @@ static void router_stop(router *r) {
 	r->running = 0;
 }
 
+static router *router_start(uint16_t vendor, uint16_t product, uint32_t location) {
+	router *r = (router *)calloc(1, sizeof(router));
+	if (!r) return NULL;
+	atomic_init(&r->rec.on, 0);
+	atomic_init(&r->rec.threadRun, 0);
+	rb_init(&r->rec.farRec, 512 * 1024);
+	rb_init(&r->rec.nearRec, 64 * 1024);
+	if (!r->rec.farRec.buf || !r->rec.nearRec.buf) {
+		router_stop(r);
+		free(r);
+		return NULL;
+	}
+	r->mavoBridge = dj_mavo_uac_bridge_start(
+		r, vendor, product, location, r->err, sizeof(r->err));
+	if (!r->mavoBridge) {
+		fprintf(stderr, "MaVo audio bridge start failed: %s\n", r->err);
+		router_stop(r);
+		free(r);
+		return NULL;
+	}
+	const char *name = dj_mavo_uac_bridge_name(r->mavoBridge);
+	snprintf(r->modInName, sizeof(r->modInName), "%s", name && *name ? name : "QDC507 UAC");
+	snprintf(r->modOutName, sizeof(r->modOutName), "%s", name && *name ? name : "QDC507 UAC");
+	snprintf(r->macInName, sizeof(r->macInName), "AVAudioEngine input");
+	snprintf(r->macOutName, sizeof(r->macOutName), "AVAudioEngine main mixer");
+	snprintf(r->fmtInfo, sizeof(r->fmtInfo),
+		"MaVo parity: USB %04x:%04x@0x%08x; UAC PCM16 mono 8000; AVAudioEngine",
+		(unsigned)vendor, (unsigned)product, (unsigned)location);
+	r->running = 1;
+	return r;
+}
+
 static void router_set_muted(router *r, int muted) {
-	if (r) r->muted = muted;
+	if (!r) return;
+	r->muted = muted;
+	if (r->mavoBridge) dj_mavo_uac_bridge_set_muted(r->mavoBridge, muted);
 }
 
 static void router_peaks(router *r, float *farPeak, float *nearPeak) {
@@ -1201,6 +1346,17 @@ static void router_peaks(router *r, float *farPeak, float *nearPeak) {
 static void router_stats(router *r, long *mi, long *mo, long *ki, long *ko,
                          long *farUsed, long *nearUsed) {
 	if (!r) { *mi=*mo=*ki=*ko=*farUsed=*nearUsed=0; return; }
+	if (r->mavoBridge) {
+		uint64_t inputCallbacks = 0, outputCallbacks = 0, inputFrames = 0, outputFrames = 0;
+		dj_mavo_uac_bridge_stats(r->mavoBridge, &inputCallbacks, &outputCallbacks, &inputFrames, &outputFrames);
+		*mi = (long)inputCallbacks;
+		*mo = (long)outputCallbacks;
+		*ki = r->macInCalls;
+		*ko = r->macOutCalls;
+		*farUsed = (long)inputFrames;
+		*nearUsed = (long)outputFrames;
+		return;
+	}
 	*mi = r->modInCalls;
 	*mo = r->modOutCalls;
 	*ki = r->macInCalls;
@@ -1278,6 +1434,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -1360,7 +1518,26 @@ func (r *audioRouter) start() error {
 	if r.impl != nil {
 		return nil
 	}
-	impl := C.router_start()
+	device := discoverDJIUSBDevice()
+	if device == nil {
+		r.lastError = "未找到 DJI/Quectel USB 模块"
+		return fmt.Errorf("%s", r.lastError)
+	}
+	parseHex := func(raw string, bits int) (uint64, error) {
+		raw = strings.TrimSpace(strings.ToLower(raw))
+		if !strings.HasPrefix(raw, "0x") {
+			raw = "0x" + raw
+		}
+		return strconv.ParseUint(raw, 0, bits)
+	}
+	vendor, vendorErr := parseHex(device.VendorID, 16)
+	product, productErr := parseHex(device.ProductID, 16)
+	location, locationErr := parseHex(device.LocationID, 32)
+	if vendorErr != nil || productErr != nil || locationErr != nil || location == 0 {
+		r.lastError = fmt.Sprintf("模块 USB 身份不完整：%s:%s location=%s", device.VendorID, device.ProductID, device.LocationID)
+		return fmt.Errorf("%s", r.lastError)
+	}
+	impl := C.router_start(C.uint16_t(vendor), C.uint16_t(product), C.uint32_t(location))
 	if impl == nil {
 		errText := "未找到模块音频设备或 Mac 默认音频设备"
 		r.lastError = errText

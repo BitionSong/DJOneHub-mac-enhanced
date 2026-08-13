@@ -83,11 +83,11 @@ async function loadPlatform() {
   } catch (_) {
     return;
   }
-  if (platformCapabilities.os === "windows") {
-    document.title = "DJOneHub for Windows";
-    const platformLabel = document.querySelector(".app-header h1 span");
-    if (platformLabel) platformLabel.textContent = "Windows";
-  }
+  if (platformCapabilities.os !== "windows") return;
+
+  document.title = "DJOneHub for Windows";
+  const platformLabel = document.querySelector(".app-header h1 span");
+  if (platformLabel) platformLabel.textContent = "Windows";
 
   if (!platformCapabilities.call_audio) {
     const audioRow = document.querySelector(".audio-row");
@@ -1405,22 +1405,22 @@ $("#refresh-sms").addEventListener("click", async () => {
 });
 $("#clear-module-sms").addEventListener("click", async () => {
   const confirmed = await showModal({
-    title: "清空模块旧短信",
-    message: "只会清空模块内部 ME 存储里的旧短信，不会删除 SIM 卡短信。",
+    title: "清空全部短信",
+    message: "将删除 SIM 卡和模块存储中的全部短信，且无法恢复。",
     confirmLabel: "确认清空",
     danger: true,
   });
   if (!confirmed) return;
   const button = $("#clear-module-sms");
   button.disabled = true;
-  $("#sms-status").textContent = "正在清空模块内部旧短信...";
+  $("#sms-status").textContent = "正在清空 SIM 与模块短信...";
   try {
     const result = await api("/api/sms/clear-module", { method: "POST" });
-    $("#sms-status").textContent = `模块旧短信已清理：${result.before ?? 0} -> ${result.after ?? 0} 条`;
+    $("#sms-status").textContent = `短信已清理：${result.before ?? 0} -> ${result.after ?? 0} 条`;
     await loadSMS();
-    notice("模块旧短信已清理");
+    notice("短信已清理");
   } catch (error) {
-    $("#sms-status").textContent = `清理模块旧短信失败：${error.message}`;
+    $("#sms-status").textContent = `清理短信失败：${error.message}`;
     notice(error.message);
   } finally {
     button.disabled = false;
@@ -1467,7 +1467,7 @@ $("#answer-call").addEventListener("click", async () => {
   button.disabled = true;
   try {
     await api("/api/calls/answer", { method: "POST" });
-    notice(platformCapabilities.call_audio ? "已接听，通话音频已启用" : "已接听；公开版未包含模块侧语音运行时");
+    notice(platformCapabilities.call_audio ? "已接听，通话音频已启用" : "已接听；Windows 通话音频尚未启用");
     await loadCalls();
   } catch (error) {
     notice(`接听失败：${error.message}`);
@@ -1498,7 +1498,7 @@ $("#dial-form").addEventListener("submit", async (event) => {
     await api("/api/calls/dial", { method: "POST", body: JSON.stringify({ number }) });
     notice(platformCapabilities.call_audio
       ? `正在拨打 ${number}，通话音频已启用`
-      : `正在拨打 ${number}；公开版未包含模块侧语音运行时`);
+      : `正在拨打 ${number}；Windows 通话音频尚未启用`);
     $("#dial-number").value = "";
     await loadCalls();
   } catch (error) {

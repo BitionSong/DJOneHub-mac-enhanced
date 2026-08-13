@@ -58,6 +58,30 @@ struct CallRecordingResponse: Codable, Sendable {
     let path: String?
 }
 
+struct SMSStatus: Codable, Sendable {
+    let autoCleanupME: Bool
+    enum CodingKeys: String, CodingKey { case autoCleanupME = "auto_cleanup_me" }
+}
+
+struct SIMIdentity: Codable, Sendable {
+    let phoneNumber: String
+    enum CodingKeys: String, CodingKey { case phoneNumber = "phone_number" }
+}
+
+struct MaVoAudioHostConfig: Codable, Sendable {
+    let vendorID: UInt16
+    let productID: UInt16
+    let locationID: UInt32
+    let routeReady: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case vendorID = "vendor_id"
+        case productID = "product_id"
+        case locationID = "location_id"
+        case routeReady = "route_ready"
+    }
+}
+
 struct GPSStatus: Codable, Sendable {
     let enabled: Bool
     let lastFix: GPSFixSummary?
@@ -100,18 +124,41 @@ struct ModemStatus: Codable, Sendable {
     }
 }
 
+struct ModuleSetupStatus: Codable, Sendable {
+    let state: String
+    let summary: String
+    let detail: String?
+    let canInitialize: Bool
+    let requiresConfirmation: Bool
+    let backupPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state, summary, detail
+        case canInitialize = "can_initialize"
+        case requiresConfirmation = "requires_confirmation"
+        case backupPath = "backup_path"
+    }
+}
+
 enum APIError: LocalizedError {
     case invalidResponse
-    case http(Int)
+    case http(Int, String?)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
             return "DJOneHub 返回了无效响应"
-        case let .http(status):
+        case let .http(status, message):
+            if let message, !message.isEmpty {
+                return message
+            }
             return "DJOneHub 请求失败（HTTP \(status)）"
         }
     }
+}
+
+private struct APIErrorPayload: Decodable {
+    let error: String?
 }
 
 struct DJOneHubAPI: Sendable {
@@ -144,14 +191,20 @@ struct DJOneHubAPI: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
         return try Self.decoder.decode(NetworkCheckResult.self, from: data).ok
     }
 
     func modemStatus() async throws -> ModemStatus {
         try await get(path: "api/status")
+    }
+
+    func moduleSetupStatus() async throws -> ModuleSetupStatus {
+        try await get(path: "api/module/setup")
+    }
+
+    func initializeModule() async throws -> ModuleSetupStatus {
+        try await postDecoded(path: "api/module/setup", body: ["confirm": true])
     }
 
     func rejectCall() async throws -> RejectResponse {
@@ -162,9 +215,7 @@ struct DJOneHubAPI: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
         return try Self.decoder.decode(RejectResponse.self, from: data)
     }
 
@@ -176,16 +227,35 @@ struct DJOneHubAPI: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
         return try Self.decoder.decode(T.self, from: data)
+    }
+
+    private static func requireSuccess(_ response: HTTPURLResponse, data: Data) throws {
+        guard (200..<300).contains(response.statusCode) else {
+            let message = (try? decoder.decode(APIErrorPayload.self, from: data))?.error
+            throw APIError.http(response.statusCode, message)
+        }
     }
 }
 
 // MARK: - 原生 App 接口（拨号 / 接听 / 挂断 / 静音）
 
 extension DJOneHubAPI {
+    func smsStatus() async throws -> SMSStatus { try await get(path: "api/sms/status") }
+    func setSMSAutoCleanup(_ enabled: Bool) async throws {
+        try await patch(path: "api/sms/settings", body: ["auto_cleanup_me": enabled])
+    }
+    func simIdentity() async throws -> SIMIdentity { try await get(path: "api/sim/identity") }
+
+    func setMaVoAudioHostEnabled(_ enabled: Bool) async throws {
+        try await post(path: "api/calls/audio/host/register", body: ["enabled": enabled])
+    }
+
+    func maVoAudioHostConfig() async throws -> MaVoAudioHostConfig {
+        try await get(path: "api/calls/audio/host/config")
+    }
+
     func dial(number: String) async throws {
         try await post(path: "api/calls/dial", body: ["number": number])
     }
@@ -223,9 +293,7 @@ extension DJOneHubAPI {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
         return try Self.decoder.decode(SMSSendResult.self, from: data)
     }
 
@@ -243,13 +311,11 @@ extension DJOneHubAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
         request.timeoutInterval = 8
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
     }
 
     private func post<Body: Encodable>(path: String, body: Body) async throws {
@@ -258,13 +324,11 @@ extension DJOneHubAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
         request.timeoutInterval = 5
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
     }
 
     private func postDecoded<Response: Decodable, Body: Encodable>(
@@ -280,9 +344,7 @@ extension DJOneHubAPI {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard (200..<300).contains(http.statusCode) else {
-            throw APIError.http(http.statusCode)
-        }
+        try Self.requireSuccess(http, data: data)
         return try Self.decoder.decode(Response.self, from: data)
     }
 }

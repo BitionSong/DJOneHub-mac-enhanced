@@ -55,10 +55,10 @@ func openDJIUSBADB() (*adbClient, error) {
 	if rc := C.libusb_init(&ctx); rc != 0 {
 		return nil, fmt.Errorf("libusb init: %s", usbErrorName(rc))
 	}
-	handle := C.libusb_open_device_with_vid_pid(ctx, djiUSBVendorID, djiUSBProductID)
+	handle, identity := openSupportedUSBModuleDevice(ctx)
 	if handle == nil {
 		C.libusb_exit(ctx)
-		return nil, errors.New("DJI USB ADB device 2ca3:4006 not found")
+		return nil, errors.New("DJI/Quectel USB ADB device (2ca3:4006 or 2c7c:0125) not found")
 	}
 	dev := C.libusb_get_device(handle)
 	if dev == nil {
@@ -112,7 +112,7 @@ func openDJIUSBADB() (*adbClient, error) {
 	if target == nil {
 		C.libusb_close(handle)
 		C.libusb_exit(ctx)
-		return nil, errors.New("DJI USB ADB interface (6/adb) not found")
+		return nil, fmt.Errorf("USB ADB interface (6/adb) not found on %s", identity.String())
 	}
 	if rc := C.libusb_claim_interface(handle, C.int(target.iface)); rc != 0 {
 		C.libusb_close(handle)

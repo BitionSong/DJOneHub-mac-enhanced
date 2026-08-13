@@ -29,6 +29,15 @@ func TestParseCLCCIgnoresDataSession(t *testing.T) {
 	}
 }
 
+func TestValidateCallATResponseRejectsModemError(t *testing.T) {
+	if err := validateCallATResponse("ATD10086;\r\nERROR"); err == nil {
+		t.Fatal("validateCallATResponse accepted ERROR reply")
+	}
+	if err := validateCallATResponse("ATD10086;\r\nOK"); err != nil {
+		t.Fatalf("validateCallATResponse rejected OK reply: %v", err)
+	}
+}
+
 func TestCallLifecycleMarksMissed(t *testing.T) {
 	a := &app{callPollInterval: 3 * time.Second, callNotifier: func(callRecord) {}}
 	started := time.Date(2026, 7, 26, 10, 0, 0, 0, time.Local)
