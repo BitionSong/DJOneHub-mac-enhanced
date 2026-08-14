@@ -1,4 +1,4 @@
-# DJOneHub v1.2.4 Public Release Architecture
+# DJOneHub v1.2.5 Public Release Architecture
 
 ## Product goal
 

@@ -1877,7 +1877,7 @@ private struct SettingsView: View {
                 Text(L10n.t("设置"))
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Text("V1.2.4")
+                Text("V1.2.5")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }

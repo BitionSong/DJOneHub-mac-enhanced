@@ -4,9 +4,9 @@
 
 DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供短信、4G、GPS、eSIM、来电及通话控制，不修改模块固件。
 
-## v1.2.4：独立 App 版
+## v1.2.5：一次确认启用通话
 
-从网页控制台整理为独立 macOS App。拨号、通话、短信、通讯录和设置都收进同一套界面；来电与短信提醒不需要网页常驻。
+独立 macOS App 集中管理拨号、通话、短信、通讯录和设置；来电与短信提醒不需要网页常驻。首次在「设置 → 语音运行时」确认后，App 会从固定上游来源下载指定版本、逐项校验 SHA-256 并缓存到本机；模块重启后自动复用缓存。
 
 | 功能 | 说明 |
 | --- | --- |
@@ -58,7 +58,7 @@ DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供
 
 | 平台 | 包 | 当前状态 |
 | --- | --- | --- |
-| macOS 13+ | `DJOneHub-macOS-universal-v1.2.4.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
+| macOS 13+ | `DJOneHub-macOS-universal-v1.2.5.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
 | Windows x86-64 | `DJOneHub-Windows-amd64-v1.2.4.zip` | 内含 `DJOneHub.exe`；尚未在真实 Windows + 模块上验证。 |
 
 Windows 目前不承诺模块功能可用；它不提供 macOS 专用的 USB AT/eSIM、USB 4G 自动策略、原生通知、MapKit 或双向通话音频。
@@ -74,16 +74,16 @@ Windows 目前不承诺模块功能可用；它不提供 macOS 专用的 USB AT/
 
 源码包含 macOS App、Go 后端、Windows 控制台、MaVo MIT 音频适配代码和构建脚本。
 
-Mac 双向通话仍需要模块侧语音运行时。该运行时**不随本仓库、Release、DMG 或 Windows ZIP 提供**：其中两个内核模块当前没有可核对的对应源码或明确再分发依据。请不要把未知来源的二进制提交到 Issue、PR 或衍生 Release。
+Mac 双向通话仍需要模块侧语音运行时。该运行时**不随本仓库、Release、DMG 或 Windows ZIP 提供，也不会由 DJOneHub 镜像**。用户一次明确确认后，App 才会从固定上游来源获取指定版本，逐项校验 SHA-256 后保存到本机。上游文件、模块型号、固件、SIM 和运营商条件均可能影响双向语音可用性。
 
-已合法获得兼容运行时的开发者，可按 [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md) 的外置运行时约定自行研究。缺少运行时时，来电、通话状态和控制入口仍可使用，但 Mac 双向语音不会启用。
+请不要把未知来源的二进制提交到 Issue、PR 或衍生 Release。完整边界见 [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md)。
 
 ## 从源码构建
 
 ```sh
 # macOS Universal
-scripts/package-macos-universal.sh v1.2.4
-scripts/build-dmg-universal.sh v1.2.4
+scripts/package-macos-universal.sh v1.2.5
+scripts/build-dmg-universal.sh v1.2.5
 
 # Windows x86-64
 scripts/package-windows-amd64.sh v1.2.4

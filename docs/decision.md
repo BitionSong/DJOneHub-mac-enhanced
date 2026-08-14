@@ -1,4 +1,4 @@
-# DJOneHub v1.2.4 Public Release Decisions
+# DJOneHub v1.2.5 Public Release Decisions
 
 ## Accepted
 
