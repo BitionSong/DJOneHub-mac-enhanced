@@ -200,6 +200,18 @@ func (a *app) setModuleSetup(status moduleSetupStatus) {
 	a.moduleSetupMu.Unlock()
 }
 
+// invalidateReadyModuleSetup makes a later status request inspect USB again
+// after a physical disconnect/re-enumeration. It deliberately leaves an
+// in-progress setup untouched: the worker owns that state through reboot and
+// validation.
+func (a *app) invalidateReadyModuleSetup() {
+	a.moduleSetupMu.Lock()
+	if a.moduleSetup.State == "ready" {
+		a.moduleSetup = moduleSetupStatus{}
+	}
+	a.moduleSetupMu.Unlock()
+}
+
 func (a *app) moduleSetupStartAPI(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Confirm bool `json:"confirm"`

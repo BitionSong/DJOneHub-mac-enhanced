@@ -59,6 +59,27 @@ func TestModuleSetupTerminalStatesAreServedFromCache(t *testing.T) {
 	}
 }
 
+func TestReadyModuleSetupInvalidatesAfterUSBReenumeration(t *testing.T) {
+	a := &app{}
+	a.setModuleSetup(moduleSetupStatus{State: "ready", Summary: "ready"})
+	a.invalidateReadyModuleSetup()
+	a.moduleSetupMu.RLock()
+	state := a.moduleSetup.State
+	a.moduleSetupMu.RUnlock()
+	if state != "" {
+		t.Fatalf("ready state after re-enumeration = %q, want cleared", state)
+	}
+
+	a.setModuleSetup(moduleSetupStatus{State: "restarting", Summary: "restart"})
+	a.invalidateReadyModuleSetup()
+	a.moduleSetupMu.RLock()
+	state = a.moduleSetup.State
+	a.moduleSetupMu.RUnlock()
+	if state != "restarting" {
+		t.Fatalf("in-progress state after re-enumeration = %q, want restarting", state)
+	}
+}
+
 func TestParseIMSConfiguration(t *testing.T) {
 	configuration, capability, err := parseIMSConfiguration("AT+QCFG=\"ims\"\r\n+QCFG: \"ims\",1,1\r\nOK")
 	if err != nil || configuration != 1 || capability != 1 {

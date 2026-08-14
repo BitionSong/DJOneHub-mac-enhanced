@@ -967,6 +967,9 @@ func (a *app) markUSBATDetached(reason string) {
 	a.discoveryError = "DJI USB device is not connected"
 	a.usbATBackoffUntil = time.Now().Add(2 * time.Second)
 	a.usbATBackoffErr = reason
+	// A module reboot or re-enumeration can change USBCFG outside this process.
+	// Do not keep reporting a previously cached "ready" state in that case.
+	a.invalidateReadyModuleSetup()
 	a.callMu.Lock()
 	a.callConfigured = false
 	a.callMu.Unlock()
