@@ -159,6 +159,7 @@ struct VoiceRuntimeStatus: Codable, Sendable {
 enum APIError: LocalizedError {
     case invalidResponse
     case http(Int, String?)
+    case unreadablePayload(String)
 
     var errorDescription: String? {
         switch self {
@@ -169,6 +170,8 @@ enum APIError: LocalizedError {
                 return message
             }
             return "DJOneHub 请求失败（HTTP \(status)）"
+        case let .unreadablePayload(message):
+            return message
         }
     }
 }
@@ -224,7 +227,12 @@ struct DJOneHubAPI: Sendable {
     }
 
     func provisionVoiceRuntime() async throws -> VoiceRuntimeStatus {
-        try await postDecoded(path: "api/voice/provision", body: ["confirm": true])
+        try await postDecoded(
+            path: "api/voice/provision",
+            body: ["confirm": true],
+            timeout: 180,
+            unreadablePayloadMessage: "语音运行时下载完成，但 DJOneHub 返回的数据无法识别。请更新本机后台服务后重试。"
+        )
     }
 
     func initializeModule() async throws -> ModuleSetupStatus {
@@ -357,19 +365,28 @@ extension DJOneHubAPI {
 
     private func postDecoded<Response: Decodable, Body: Encodable>(
         path: String,
-        body: Body
+        body: Body,
+        timeout: TimeInterval = 5,
+        unreadablePayloadMessage: String? = nil
     ) async throws -> Response {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        request.timeoutInterval = 5
+        request.timeoutInterval = timeout
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
         try Self.requireSuccess(http, data: data)
-        return try Self.decoder.decode(Response.self, from: data)
+        do {
+            return try Self.decoder.decode(Response.self, from: data)
+        } catch {
+            if let unreadablePayloadMessage {
+                throw APIError.unreadablePayload(unreadablePayloadMessage)
+            }
+            throw error
+        }
     }
 }
 

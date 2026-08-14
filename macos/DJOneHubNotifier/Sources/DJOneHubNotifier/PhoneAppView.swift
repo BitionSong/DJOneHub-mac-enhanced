@@ -2119,7 +2119,7 @@ private struct VoiceRuntimeCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(status?.runtimeInstalled == true ? "语音运行时已就绪" : "尚未安装语音运行时")
                         .font(.footnote.weight(.semibold))
-                    Text(status?.runtimeDetail ?? "首次确认后从上游固定版本下载并校验；模块重启后将从本机缓存自动恢复。")
+                    Text(status?.runtimeDetail ?? "首次确认后从上游固定版本下载并校验，下载可能需要数分钟；模块重启后将从本机缓存自动恢复。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2180,7 +2180,13 @@ private struct VoiceRuntimeCard: View {
                 let next = try await api.provisionVoiceRuntime()
                 await MainActor.run { status = next; isLoading = false }
             } catch {
-                await MainActor.run { errorText = error.localizedDescription; isLoading = false }
+                let message: String
+                if (error as? URLError)?.code == .timedOut {
+                    message = "语音运行时下载超过 3 分钟未完成，请检查网络后重试。"
+                } else {
+                    message = error.localizedDescription
+                }
+                await MainActor.run { errorText = message; isLoading = false }
             }
         }
     }
