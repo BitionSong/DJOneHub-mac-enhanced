@@ -69,6 +69,22 @@ func (c usbComposition) isFactoryDJI() bool {
 		len(c.Flags) == 7 && strings.Join(intSliceStrings(c.Flags), ",") == "1,1,1,1,1,0,0"
 }
 
+// isRecoverable accepts any complete, binary USB composition returned by the
+// supported module. It intentionally does not require a known VID/PID or flag
+// pattern: another tool may have changed those values, and the explicit setup
+// flow can safely back them up and restore them if validation fails.
+func (c usbComposition) isRecoverable() bool {
+	if c.VendorID < 0 || c.VendorID > 0xFFFF || c.ProductID < 0 || c.ProductID > 0xFFFF || len(c.Flags) != 7 {
+		return false
+	}
+	for _, flag := range c.Flags {
+		if flag != 0 && flag != 1 {
+			return false
+		}
+	}
+	return true
+}
+
 func intSliceStrings(values []int) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
@@ -141,6 +157,9 @@ func (a *app) inspectModuleSetup() moduleSetupStatus {
 	}
 	if composition.isLegacyUACTarget() {
 		return moduleSetupStatus{State: "needs_initialization", Summary: "发现旧 UAC 配置，可补齐通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
+	}
+	if composition.isRecoverable() {
+		return moduleSetupStatus{State: "needs_initialization", Summary: "发现可恢复 USB 配置，可重新启用通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
 	}
 	return moduleSetupStatus{State: "unsupported", Summary: "模块 USB 配置不是可安全初始化的原始状态", Detail: composition.command(), UpdatedAt: time.Now().Format(time.RFC3339)}
 }
@@ -219,8 +238,8 @@ func (a *app) runModuleSetup() {
 		return
 	}
 	original, err := parseUSBComposition(response)
-	if err != nil || !(original.isFactoryDJI() || original.isLegacyUACTarget() || original.isUACTarget()) {
-		detail := "模块 USB 配置已变化，停止启用"
+	if err != nil || !original.isRecoverable() {
+		detail := "模块 USB 配置格式不完整，停止启用"
 		if err != nil {
 			detail = err.Error()
 		}

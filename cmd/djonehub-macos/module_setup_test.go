@@ -25,6 +25,14 @@ func TestParseUSBCompositionAndClassification(t *testing.T) {
 	if got := factory.command(); got != `AT+QCFG="USBCFG",0x2CA3,0x4006,1,1,1,1,1,0,0` {
 		t.Fatalf("command = %q", got)
 	}
+	modified, err := parseUSBComposition(`+QCFG: "usbcfg",0x2CA3,0x4006,1,0,1,0,1,0,1`)
+	if err != nil || !modified.isRecoverable() {
+		t.Fatalf("complete third-party configuration must remain recoverable: %#v, %v", modified, err)
+	}
+	broken, err := parseUSBComposition(`+QCFG: "usbcfg",0x2CA3,0x4006,1,1,2,0,1,0,1`)
+	if err != nil || broken.isRecoverable() {
+		t.Fatalf("non-binary configuration must remain blocked: %#v, %v", broken, err)
+	}
 }
 
 func TestModuleSetupRollbackIsNotTransient(t *testing.T) {
