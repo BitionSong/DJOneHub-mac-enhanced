@@ -1,9 +1,9 @@
-# DJOneHub v1.2.4 Public Release
+# DJOneHub v1.2.5 Public Release
 
 ## Current phase
 
-Prepare local review artifacts only. Do not push or change repository visibility
-until Jamie approves the resulting package.
+Prepare and publish the approved v1.2.5 release. The source and packages keep
+module-side runtime files external; first use remains confirmation-gated.
 
 ### Active follow-up: MaVo parity call route
 
@@ -34,7 +34,9 @@ until Jamie approves the resulting package.
 - [x] Run automated tests and App self-tests.
 - [x] Request independent Claude review; fix P0/P1 findings only.
 - [x] Prepare screenshots and a private review summary for Jamie.
-- [ ] Wait for explicit approval before push, tag, visibility change or Release.
+- [x] Receive Jamie approval for push, tag and Release.
+- [ ] Verify the one-confirmation upstream-runtime bootstrap against the pinned
+  source and a real QDC507 call before representing it as download-and-call.
 - [x] Add first-module inspection, confirmation-gated initialization and
   recovery status to the macOS App.
 - [x] Preserve the original USB composition before any initialization write;
@@ -45,7 +47,9 @@ until Jamie approves the resulting package.
 ## Public-release boundaries
 
 - Exclude `qdc507_aprv3.ko`, `qdc507_voice.ko` and `mavo-pcm-bridge.armv7`
-  from source, Git history, DMG and Windows ZIP.
+  from source, Git history, DMG and Windows ZIP. The macOS App may obtain the
+  pinned upstream copy only after an explicit user confirmation and SHA-256
+  verification; no background download is permitted.
 - Keep the application, controls and MaVo MIT audio adaptation open source.
 - State that Intel Mac and Windows packages are structurally verified but not
   runtime-validated on matching hardware.

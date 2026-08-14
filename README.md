@@ -4,16 +4,9 @@
 
 DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供短信、4G、GPS、eSIM、来电及通话控制，不修改模块固件。
 
-## 项目沿革
+## v1.2.5：一次确认启用通话
 
-本项目基于 [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneHub) 的模块管理基础能力，以及上游 [VoHive](https://github.com/iniwex5/vohive) 的公开实现继续演进。早期版本围绕短信、eSIM、USB 4G、来电提醒、GPS 与网络自动恢复展开；v1.2.4 在此基础上将日常入口整理为独立 macOS App。
-
-- [旧版完整说明与使用文档](docs/history/README-v0.1.7-preview.md)：保留原有功能说明、接入原理、安装步骤、历史版本与限制。
-- [完整更新记录](CHANGELOG.md)：保留 v0.1.1-preview 至 v1.2.4 的迭代过程。
-
-## v1.2.4：独立 App 版
-
-从网页控制台整理为独立 macOS App。拨号、通话、短信、通讯录和设置都收进同一套界面；来电与短信提醒不需要网页常驻。
+独立 macOS App 集中管理拨号、通话、短信、通讯录和设置；来电与短信提醒不需要网页常驻。首次在「设置 → 语音运行时」确认后，App 会从固定上游来源下载指定版本、逐项校验 SHA-256 并缓存到本机；模块重启后自动复用缓存。
 
 | 功能 | 说明 |
 | --- | --- |
@@ -65,7 +58,7 @@ DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供
 
 | 平台 | 包 | 当前状态 |
 | --- | --- | --- |
-| macOS 13+ | `DJOneHub-macOS-universal-v1.2.4.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
+| macOS 13+ | `DJOneHub-macOS-universal-v1.2.5.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
 | Windows x86-64 | `DJOneHub-Windows-amd64-v1.2.4.zip` | 内含 `DJOneHub.exe`；尚未在真实 Windows + 模块上验证。 |
 
 Windows 目前不承诺模块功能可用；它不提供 macOS 专用的 USB AT/eSIM、USB 4G 自动策略、原生通知、MapKit 或双向通话音频。
@@ -81,16 +74,16 @@ Windows 目前不承诺模块功能可用；它不提供 macOS 专用的 USB AT/
 
 源码包含 macOS App、Go 后端、Windows 控制台、MaVo MIT 音频适配代码和构建脚本。
 
-Mac 双向通话仍需要模块侧语音运行时。该运行时**不随本仓库、Release、DMG 或 Windows ZIP 提供**：其中两个内核模块当前没有可核对的对应源码或明确再分发依据。请不要把未知来源的二进制提交到 Issue、PR 或衍生 Release。
+Mac 双向通话仍需要模块侧语音运行时。该运行时**不随本仓库、Release、DMG 或 Windows ZIP 提供，也不会由 DJOneHub 镜像**。用户一次明确确认后，App 才会从固定上游来源获取指定版本，逐项校验 SHA-256 后保存到本机。上游文件、模块型号、固件、SIM 和运营商条件均可能影响双向语音可用性。
 
-已合法获得兼容运行时的开发者，可按 [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md) 的外置运行时约定自行研究。缺少运行时时，来电、通话状态和控制入口仍可使用，但 Mac 双向语音不会启用。
+请不要把未知来源的二进制提交到 Issue、PR 或衍生 Release。完整边界见 [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md)。
 
 ## 从源码构建
 
 ```sh
 # macOS Universal
-scripts/package-macos-universal.sh v1.2.4
-scripts/build-dmg-universal.sh v1.2.4
+scripts/package-macos-universal.sh v1.2.5
+scripts/build-dmg-universal.sh v1.2.5
 
 # Windows x86-64
 scripts/package-windows-amd64.sh v1.2.4
@@ -106,11 +99,3 @@ scripts/package-windows-amd64.sh v1.2.4
 - 与 DJI、Quectel、运营商及 eSIM 厂商不存在隶属或授权关系。
 
 许可证与第三方声明见 [LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 [OPEN_SOURCE_SCOPE.md](OPEN_SOURCE_SCOPE.md)。
-
-## 致谢
-
-- [ZenGeekLabs/DJOneHub](https://github.com/ZenGeekLabs/DJOneHub)：原始模块管理与 macOS 使用思路。
-- [VoHive](https://github.com/iniwex5/vohive)：项目早期代码基础；保留其要求的署名声明。
-- [MaVo](https://github.com/moluncn/mavo)（[固定参考提交](https://github.com/moluncn/mavo/commit/0443dfdaf8aec086fd76ba2ee9152fd908114524)，MIT）：本次引入的 UAC 探测、调制解调器桥接与 macOS 音频适配参考。模块侧运行时不随本项目分发。
-- [libusb](https://libusb.info/) 与本项目使用的开源依赖维护者。
-- 分享大疆第一代 4G 模块资料、兼容性结果与测试经验的社区贡献者。

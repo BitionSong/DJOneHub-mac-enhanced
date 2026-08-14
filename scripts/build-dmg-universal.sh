@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${1:-v1.2.4}
+VERSION=${1:-v1.2.5}
 DMG_NAME="DJOneHub-macOS-universal-${VERSION}.dmg"
 STAGE="${ROOT_DIR}/dist/dmg-stage-universal"
 DMG="${ROOT_DIR}/dist/${DMG_NAME}"
@@ -31,6 +31,7 @@ swift build --disable-sandbox -c release
 # the Intel slice explicitly, including the two local C targets used by the
 # notifier. This avoids claiming a universal app while silently shipping arm64.
 INTEL_ROOT="${BUILD_ROOT}/notifier-x86_64"
+rm -rf "${INTEL_ROOT}"
 mkdir -p "${INTEL_ROOT}/module-cache"
 cat > "${INTEL_ROOT}/CModemBridge.modulemap" <<EOF
 module CModemBridge { header "${NOTIFIER_SRC}/Sources/CModemBridge/include/CModemBridge.h" export * }

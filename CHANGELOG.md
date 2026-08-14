@@ -1,13 +1,12 @@
 # 更新记录
 
-## 2026-08-13 · v1.2.4（公开发布）
+## 2026-08-14 · v1.2.5（上游运行时引导）
 
-- 将既有网页管理能力整理为独立 macOS App：电话、通话记录、短信、通讯录和设置统一入口。
-- 补充拨号、接听、拒接、挂断、DTMF、通话记录、录音入口、本机号码读取与短信自动清理。
-- 保留早期版本的 USB 4G、Wi-Fi 优先/4G 兜底、来电和短信提醒、GPS、eSIM、AT 调试及网络自动恢复能力。
-- 发布 macOS Universal DMG（arm64 + x86_64）与 Windows x86-64 `DJOneHub.exe` 候选包；Windows 仍待真实硬件验证。
-- README 增加脱敏真实截图、历史说明入口和公开范围说明。
-- 新增 MaVo host-side adaptation 的 MIT 许可与引用说明；模块侧语音运行时不包含在仓库或 Release 中。
+- macOS App 新增「设置 → 语音运行时」：首次明确确认后，直接从固定上游来源获取指定版本，逐项校验 SHA-256 并缓存到本机。
+- 模块重启或重插后复用本机已校验缓存，不重复下载、不重复确认；通话时再临时部署到模块侧，不刷写固件。
+- 公开仓库、Release、DMG 与 Windows 包继续不包含、镜像或自动打包任何 `.ko`、PCM bridge 或 payload。
+- 新增确认门禁、运行时来源与哈希校验测试；重置 Intel 通知助手 module cache，保证 Universal DMG 可重复构建。
+- macOS Universal DMG 继续包含 arm64 + x86_64 后端、通知 App 和 libusb；Intel 硬件运行仍待真机验证。
 
 ## 2026-08-08 · v1.0.0-rc1（私有候选版）
 

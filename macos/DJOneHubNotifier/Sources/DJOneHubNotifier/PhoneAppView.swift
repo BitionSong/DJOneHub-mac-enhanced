@@ -1877,7 +1877,7 @@ private struct SettingsView: View {
                 Text(L10n.t("设置"))
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Text("V1.2.4")
+                Text("V1.2.5")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -1893,6 +1893,9 @@ private struct SettingsView: View {
 
                     MoreSectionTitle("模块初始化")
                     ModuleSetupCard()
+
+                    MoreSectionTitle("语音运行时")
+                    VoiceRuntimeCard()
 
                     MoreSectionTitle(L10n.t("通用"))
                     VStack(spacing: 0) {
@@ -2092,6 +2095,90 @@ private struct ModuleSetupCard: View {
                 await MainActor.run { status = next; isLoading = false }
                 try? await Task.sleep(for: .seconds(4))
                 await MainActor.run { refresh() }
+            } catch {
+                await MainActor.run { errorText = error.localizedDescription; isLoading = false }
+            }
+        }
+    }
+}
+
+private struct VoiceRuntimeCard: View {
+    @State private var status: VoiceRuntimeStatus?
+    @State private var isLoading = false
+    @State private var showConfirm = false
+    @State private var errorText: String?
+    private let api = DJOneHubAPI(baseURL: URL(string: "http://127.0.0.1:7575/")!)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: status?.runtimeInstalled == true ? "waveform.circle.fill" : "arrow.down.circle")
+                    .foregroundStyle(status?.runtimeInstalled == true ? .green : .accentColor)
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(status?.runtimeInstalled == true ? "语音运行时已就绪" : "尚未安装语音运行时")
+                        .font(.footnote.weight(.semibold))
+                    Text(status?.runtimeDetail ?? "首次确认后从上游固定版本下载并校验；模块重启后将从本机缓存自动恢复。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button { refresh() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if status?.runtimeInstalled != true {
+                Button { showConfirm = true } label: {
+                    Label("确认并启用通话", systemImage: "phone.badge.checkmark")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(isLoading)
+            }
+            if let errorText {
+                Text(errorText)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(12)
+        .modifier(PhoneCard())
+        .task { refresh() }
+        .alert("下载并启用语音运行时？", isPresented: $showConfirm) {
+            Button("确认并启用", role: .destructive) { provision() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将从 MaVo 官方固定版本直接下载模块侧语音运行时，校验 SHA-256 后保存到本机。DJOneHub 不随 App 分发该运行时。首次通话时会临时部署到当前模块；不刷写固件。")
+        }
+    }
+
+    private func refresh() {
+        guard !isLoading else { return }
+        isLoading = true
+        errorText = nil
+        Task {
+            do {
+                let next = try await api.voiceRuntimeStatus()
+                await MainActor.run { status = next; isLoading = false }
+            } catch {
+                await MainActor.run { errorText = error.localizedDescription; isLoading = false }
+            }
+        }
+    }
+
+    private func provision() {
+        isLoading = true
+        errorText = nil
+        Task {
+            do {
+                let next = try await api.provisionVoiceRuntime()
+                await MainActor.run { status = next; isLoading = false }
             } catch {
                 await MainActor.run { errorText = error.localizedDescription; isLoading = false }
             }

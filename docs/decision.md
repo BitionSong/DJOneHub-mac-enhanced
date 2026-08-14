@@ -1,4 +1,4 @@
-# DJOneHub v1.2.4 Public Release Decisions
+# DJOneHub v1.2.5 Public Release Decisions
 
 ## Accepted
 
@@ -35,8 +35,10 @@
 - Prepare Windows as a separate platform package with honest capability flags.
 - Keep all release work private until Jamie approves the preview.
 - Publish DJOneHub as an open-source project while excluding module-side voice
-  runtime binaries from all public artifacts. Do not describe a public package
-  as a download-and-call bundle.
+  runtime binaries from all public artifacts. A user-confirmed, pinned upstream
+  bootstrap may cache and use the upstream runtime locally after SHA-256
+  validation. Do not describe a public package as a download-and-call bundle
+  until that exact path passes a real QDC507 call test.
 
 ## Rejected
 
