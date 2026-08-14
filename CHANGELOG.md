@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-08-14 · v1.2.6（iPhone / iPad 模式）
+
+- macOS App 新增「设置 → 连接模式」。iPhone / iPad 模式仅关闭模块 USB Audio，保留 USB 4G、AT 与短信接口，避免移动设备将模块抢作系统音频输出。
+- 切换到移动模式只保存 `USBCFG`，不在当前 Mac 上主动重启；拔插到移动设备后才生效。
+- 模块下次接入运行 DJOneHub 的 Mac 时，会回读配置、仅恢复官方定义的 UAC 位并重新枚举，VID、PID 与其他 USB 接口位均原样保留。
+- 未识别或不完整的 `USBCFG` 配置会拒绝写入；新增对应配置解析测试。
+- macOS Universal DMG 与 Windows x86-64 ZIP 同步更新为 v1.2.6。Windows 仍不支持 macOS 专属 USB Audio、自动恢复及 iPhone/iPad 模式控制。
+
 ## 2026-08-14 · v1.2.5（上游运行时引导）
 
 - macOS App 新增「设置 → 语音运行时」：首次明确确认后，直接从固定上游来源获取指定版本，逐项校验 SHA-256 并缓存到本机。

@@ -409,6 +409,22 @@ struct NetworkTrafficSnapshot: Codable, Sendable {
     }
 }
 
+struct USBProfileStatus: Codable, Sendable {
+    let mode: String
+    let uacEnabled: Bool
+    let configuration: String
+    let needsReconnect: Bool
+    let message: String?
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case uacEnabled = "uac_enabled"
+        case configuration
+        case needsReconnect = "needs_reconnect"
+        case message
+    }
+}
+
 struct GPSControlResponse: Codable, Sendable {
     let enabled: Bool
     let lastFix: GPSFixSummary?
@@ -521,6 +537,14 @@ extension DJOneHubAPI {
 
     func networkTraffic() async throws -> NetworkTrafficSnapshot {
         try await get(path: "api/network/traffic")
+    }
+
+    func usbProfile() async throws -> USBProfileStatus {
+        try await get(path: "api/usb/profile")
+    }
+
+    func setUSBProfile(_ mode: String) async throws -> USBProfileStatus {
+        try await postDecoded(path: "api/usb/profile", body: ["mode": mode])
     }
 
     func gpsStart() async throws -> GPSControlResponse {

@@ -151,6 +151,7 @@ type app struct {
 	networkPolicyPath   string
 
 	networkRepairMu sync.Mutex
+	usbProfileMu    sync.Mutex
 
 	usbATOpenMu      sync.Mutex
 	recoveryMu       sync.Mutex
@@ -196,6 +197,50 @@ type pdpContext struct {
 	ID  int    `json:"id"`
 	PDN string `json:"pdn"`
 	APN string `json:"apn"`
+}
+
+type usbProfileStatus struct {
+	Mode           string `json:"mode"`
+	UACEnabled     bool   `json:"uac_enabled"`
+	Configuration  string `json:"configuration"`
+	NeedsReconnect bool   `json:"needs_reconnect"`
+	Message        string `json:"message,omitempty"`
+}
+
+type usbConfig struct{ fields []string }
+
+func (c usbConfig) uacEnabled() bool { return len(c.fields) == 9 && c.fields[8] == "1" }
+
+func (c usbConfig) withUAC(enabled bool) string {
+	fields := append([]string(nil), c.fields...)
+	if enabled {
+		fields[8] = "1"
+	} else {
+		fields[8] = "0"
+	}
+	return `AT+QCFG="usbcfg",` + strings.Join(fields, ",")
+}
+
+func parseUSBConfig(resp string) (usbConfig, error) {
+	re := regexp.MustCompile(`(?im)^\s*\+QCFG:\s*"usbcfg"\s*,\s*([^\r\n]+)`)
+	match := re.FindStringSubmatch(resp)
+	if len(match) != 2 {
+		return usbConfig{}, errors.New("模块未返回可识别的 USBCFG 配置")
+	}
+	fields := strings.Split(match[1], ",")
+	if len(fields) != 9 {
+		return usbConfig{}, fmt.Errorf("USBCFG 功能位数量异常（%d），已拒绝写入", len(fields))
+	}
+	for i := range fields {
+		fields[i] = strings.TrimSpace(fields[i])
+		if fields[i] == "" {
+			return usbConfig{}, errors.New("USBCFG 含空字段，已拒绝写入")
+		}
+	}
+	if fields[8] != "0" && fields[8] != "1" {
+		return usbConfig{}, fmt.Errorf("USBCFG UAC 位异常（%s），已拒绝写入", fields[8])
+	}
+	return usbConfig{fields: fields}, nil
 }
 
 type macNetInterface struct {
@@ -290,8 +335,15 @@ func main() {
 				instance.discoveryError = ""
 				defer usbATDevice.Close()
 				log.Printf("USB AT bridge opened on DJI %s", usbATDevice.Description())
-				instance.initUSBATESIMManager()
-				instance.ensureCellularDHCP()
+				if changed, profileErr := instance.autoEnableMacAudioProfile(); profileErr != nil {
+					log.Printf("Mac audio profile check: %v", profileErr)
+				} else if changed {
+					instance.discoveryError = "正在恢复 Mac 完整模式，请等待模块重新连接"
+				}
+				if instance.usbAT != nil {
+					instance.initUSBATESIMManager()
+					instance.ensureCellularDHCP()
+				}
 			}
 			log.Printf("modem discovery skipped: %v", err)
 			go instance.startSMSPoller(context.Background())
@@ -793,12 +845,46 @@ func (a *app) ensureUSBAT() error {
 	a.port = dev.Description()
 	a.discoveryError = ""
 	log.Printf("USB AT bridge opened on DJI %s", dev.Description())
+	if changed, err := a.autoEnableMacAudioProfile(); err != nil {
+		log.Printf("Mac audio profile check: %v", err)
+	} else if changed {
+		return nil
+	}
 	// The first open may fail while USB is re-enumerating. When a later poll
 	// succeeds, rebuild the eSIM service that startup could not create.
 	a.initUSBATESIMManager()
 	a.ensureCellularDHCP()
 	a.kickModuleVoice()
 	return nil
+}
+
+// autoEnableMacAudioProfile restores UAC only when this Mac receives a module
+// deliberately prepared for iPhone/iPad use. It keeps every other USB function
+// returned by the module unchanged.
+func (a *app) autoEnableMacAudioProfile() (bool, error) {
+	if a.demo || a.usbAT == nil {
+		return false, nil
+	}
+	response, err := a.usbAT.Command(`AT+QCFG="usbcfg"`, 8*time.Second)
+	if err != nil {
+		return false, err
+	}
+	config, err := parseUSBConfig(response)
+	if err != nil {
+		return false, err
+	}
+	if config.uacEnabled() {
+		return false, nil
+	}
+	if _, err := a.usbAT.Command(config.withUAC(true), 8*time.Second); err != nil {
+		return false, err
+	}
+	if _, err := a.usbAT.Command("AT+CFUN=1,1", 3*time.Second); err != nil {
+		return false, err
+	}
+	log.Printf("module arrived in iPhone/iPad mode; restoring Mac USB Audio and re-enumerating")
+	a.markUSBATDetached("switching to Mac complete USB profile")
+	return true, nil
 }
 
 const usbATOpenTimeout = 12 * time.Second
@@ -1004,6 +1090,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/network/check-proxy", a.checkProxyRoute)
 	mux.HandleFunc("POST /api/network/usbnet", a.setUSBNetMode)
 	mux.HandleFunc("POST /api/network/reboot-module", a.rebootModule)
+	mux.HandleFunc("GET /api/usb/profile", a.usbProfile)
+	mux.HandleFunc("POST /api/usb/profile", a.setUSBProfile)
 	mux.HandleFunc("GET /api/esim", a.esimOverview)
 	mux.HandleFunc("GET /api/esim/notes", a.listESIMNotes)
 	mux.HandleFunc("PUT /api/esim/notes", a.saveESIMNote)
@@ -2429,6 +2517,87 @@ func (a *app) rebootModule(w http.ResponseWriter, _ *http.Request) {
 		"accepted": true,
 		"response": response,
 	})
+}
+
+func (a *app) readUSBProfile() (usbConfig, string, error) {
+	response, err := a.runATCommand(`AT+QCFG="usbcfg"`, 8*time.Second)
+	if err != nil {
+		return usbConfig{}, "", err
+	}
+	config, err := parseUSBConfig(response)
+	if err != nil {
+		return usbConfig{}, "", err
+	}
+	return config, strings.TrimSpace(response), nil
+}
+
+func profileStatus(config usbConfig, raw string, needsReconnect bool, message string) usbProfileStatus {
+	mode := "mac"
+	if !config.uacEnabled() {
+		mode = "mobile"
+	}
+	return usbProfileStatus{Mode: mode, UACEnabled: config.uacEnabled(), Configuration: raw, NeedsReconnect: needsReconnect, Message: message}
+}
+
+func (a *app) usbProfile(w http.ResponseWriter, _ *http.Request) {
+	config, raw, err := a.readUSBProfile()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, profileStatus(config, raw, false, ""))
+}
+
+// setUSBProfile changes only Quectel's documented UAC field. Mobile mode saves
+// the configuration without rebooting; unplugging to iPhone/iPad applies it.
+func (a *app) setUSBProfile(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(body.Mode))
+	if mode != "mobile" && mode != "mac" {
+		writeError(w, http.StatusBadRequest, "mode must be mobile or mac")
+		return
+	}
+	a.usbProfileMu.Lock()
+	defer a.usbProfileMu.Unlock()
+	config, raw, err := a.readUSBProfile()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	wantUAC := mode == "mac"
+	if config.uacEnabled() == wantUAC {
+		message := "当前已是 Mac 完整模式"
+		if mode == "mobile" {
+			message = "当前已是 iPhone/iPad 模式；拔插到移动设备后生效"
+		}
+		writeJSON(w, http.StatusOK, profileStatus(config, raw, false, message))
+		return
+	}
+	if mode == "mobile" {
+		if _, err := a.runATCommand("AT+QPCMV=0", 5*time.Second); err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Sprintf("关闭当前语音流失败: %v", err))
+			return
+		}
+	}
+	if _, err := a.runATCommand(config.withUAC(wantUAC), 8*time.Second); err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("写入 USB 配置失败: %v", err))
+		return
+	}
+	updated := usbConfig{fields: append(append([]string(nil), config.fields[:8]...), map[bool]string{true: "1", false: "0"}[wantUAC])}
+	if mode == "mobile" {
+		writeJSON(w, http.StatusAccepted, profileStatus(updated, raw, true, "已保存 iPhone/iPad 模式；现在直接拔出并连接移动设备即可"))
+		return
+	}
+	if _, err := a.runATCommand("AT+CFUN=1,1", 3*time.Second); err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("已写入 Mac 模式，但模块重启失败: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, profileStatus(updated, raw, true, "已恢复 Mac 完整模式，模块正在重新连接"))
 }
 
 func parseUSBNetMode(resp string) string {

@@ -9,6 +9,7 @@ struct MoreView: View {
     @State private var modem: ModemStatus?
     @State private var traffic: NetworkTrafficSnapshot?
     @State private var policy: CellularPolicyStatus?
+    @State private var usbProfile: USBProfileStatus?
     @State private var esim: ESIMOverview?
     @State private var esimHealth: ESIMHealth?
     @State private var esimNotes: [String: ESIMNote] = [:]
@@ -26,6 +27,8 @@ struct MoreView: View {
     @State private var atBusy = false
     @State private var message = ""
     @State private var busy = false
+    @State private var showMobileProfileConfirm = false
+    @State private var showMacProfileConfirm = false
 
     private var profiles: [ESIMProfile] {
         esim?.profiles?.flatMap { $0.profiles ?? [] } ?? []
@@ -141,6 +144,35 @@ struct MoreView: View {
                         .padding(.vertical, 10)
                     }
                 }
+            }
+            .modifier(PhoneCard())
+
+            MoreSectionTitle("连接模式")
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: usbProfile?.mode == "mobile" ? "iphone.gen3" : "macbook")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(usbProfile?.mode == "mobile" ? Color.accentColor : .secondary)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(usbProfile?.mode == "mobile" ? "iPhone / iPad 模式" : "Mac 完整模式")
+                            .font(.system(size: 13, weight: .medium))
+                        Text(usbProfile?.mode == "mobile" ? "已关闭 USB 音频；拔插到移动设备后仅提供上网与短信" : "上网、短信与通话音频均可用")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 4)
+                    Button(usbProfile?.mode == "mobile" ? "恢复 Mac" : "iPhone / iPad") {
+                        if usbProfile?.mode == "mobile" { showMacProfileConfirm = true }
+                        else { showMobileProfileConfirm = true }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(busy || usbProfile == nil)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
             }
             .modifier(PhoneCard())
 
@@ -418,6 +450,18 @@ struct MoreView: View {
                 }
             }
         }
+        .confirmationDialog("切换到 iPhone / iPad 模式？", isPresented: $showMobileProfileConfirm, titleVisibility: .visible) {
+            Button("关闭 USB 音频并保存") { Task { await applyUSBProfile("mobile") } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("模块会保留上网和短信接口，但不再暴露 USB 音频。设置保存后直接拔出并连接 iPhone 或 iPad 即可。")
+        }
+        .confirmationDialog("恢复 Mac 完整模式？", isPresented: $showMacProfileConfirm, titleVisibility: .visible) {
+            Button("恢复并重新连接") { Task { await applyUSBProfile("mac") } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("模块将恢复 USB 音频并重新连接。完成后可继续使用通话功能。")
+        }
     }
 
     private var cellularBinding: Binding<Bool> {
@@ -444,15 +488,28 @@ struct MoreView: View {
         async let m: ModemStatus? = try? calls.apiClient.modemStatus()
         async let t: NetworkTrafficSnapshot? = try? calls.apiClient.networkTraffic()
         async let p: CellularPolicyStatus? = try? calls.apiClient.cellularPolicy()
+        async let u: USBProfileStatus? = try? calls.apiClient.usbProfile()
         async let e: ESIMOverview? = try? calls.apiClient.esimOverview()
         async let h: ESIMHealth? = try? calls.apiClient.esimHealth()
         async let n: [String: ESIMNote]? = try? calls.apiClient.esimNotes()
         modem = await m
         traffic = await t
         policy = await p
+        usbProfile = await u
         esim = await e
         esimHealth = await h
         esimNotes = await n ?? [:]
+    }
+
+    private func applyUSBProfile(_ mode: String) async {
+        busy = true
+        defer { busy = false }
+        do {
+            usbProfile = try await calls.apiClient.setUSBProfile(mode)
+            message = usbProfile?.message ?? (mode == "mobile" ? "已保存 iPhone / iPad 模式" : "正在恢复 Mac 完整模式")
+        } catch {
+            message = error.localizedDescription
+        }
     }
 
     private func runCheck(_ result: NetworkCheckResult) {

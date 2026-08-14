@@ -54,6 +54,34 @@ func TestParseUSBNetMode(t *testing.T) {
 	}
 }
 
+func TestParseUSBConfigPreservesEveryNonUACField(t *testing.T) {
+	config, err := parseUSBConfig(`AT+QCFG="usbcfg"
++QCFG: "usbcfg",0x2C7C,0x0125,1,1,1,1,1,0,1
+OK`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.uacEnabled() {
+		t.Fatal("expected UAC enabled")
+	}
+	want := `AT+QCFG="usbcfg",0x2C7C,0x0125,1,1,1,1,1,0,0`
+	if got := config.withUAC(false); got != want {
+		t.Fatalf("mobile command = %q, want %q", got, want)
+	}
+}
+
+func TestParseUSBConfigRejectsUnknownLayout(t *testing.T) {
+	for _, response := range []string{
+		`+QCFG: "usbcfg",0x2C7C,0x0125,1,1,1`,
+		`+QCFG: "usbcfg",0x2C7C,0x0125,1,1,1,1,1,0,2`,
+		`ERROR`,
+	} {
+		if _, err := parseUSBConfig(response); err == nil {
+			t.Fatalf("parseUSBConfig(%q) unexpectedly succeeded", response)
+		}
+	}
+}
+
 func TestParseMacNetworkServices(t *testing.T) {
 	input := `An asterisk (*) denotes that a network service is disabled.
 (1) Wi-Fi

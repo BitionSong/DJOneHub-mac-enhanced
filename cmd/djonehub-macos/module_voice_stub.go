@@ -30,6 +30,10 @@ func (a *app) voiceStatusAPI(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, a.voiceStatus())
 }
 
+func (a *app) voiceProvisionAPI(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusNotImplemented, "模块语音运行时仅在 macOS 版本可用")
+}
+
 func (a *app) voiceStartAPI(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusBadGateway, "模块语音路由仅在 macOS 版本可用")
 }
