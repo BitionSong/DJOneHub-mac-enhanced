@@ -129,8 +129,11 @@ func (a *app) inspectModuleSetup() moduleSetupStatus {
 		}
 		return moduleSetupStatus{State: "needs_initialization", Summary: "模块音频已就绪，需要启用 VoLTE", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
 	}
-	if composition.isFactoryDJI() || composition.isLegacyUACTarget() {
-		return moduleSetupStatus{State: "needs_initialization", Summary: "发现新模块，可初始化通话能力", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
+	if composition.isFactoryDJI() {
+		return moduleSetupStatus{State: "needs_initialization", Summary: "发现原始 USB 配置，可启用通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
+	}
+	if composition.isLegacyUACTarget() {
+		return moduleSetupStatus{State: "needs_initialization", Summary: "发现旧 UAC 配置，可补齐通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
 	}
 	return moduleSetupStatus{State: "unsupported", Summary: "模块 USB 配置不是可安全初始化的原始状态", Detail: composition.command(), UpdatedAt: time.Now().Format(time.RFC3339)}
 }
@@ -139,12 +142,21 @@ func (a *app) moduleSetupStatusAPI(w http.ResponseWriter, _ *http.Request) {
 	a.moduleSetupMu.RLock()
 	current := a.moduleSetup
 	a.moduleSetupMu.RUnlock()
-	if current.State == "initializing" || current.State == "restarting" || current.State == "verifying" || current.State == "rolled_back" {
+	if moduleSetupIsTransient(current.State) {
 		writeJSON(w, http.StatusOK, current)
 		return
 	}
 	status := a.inspectModuleSetup()
+	if current.State == "rolled_back" && status.CanInitialize {
+		status.Summary = "上次启用未验证，已恢复原始配置；可手动重试"
+		status.Detail = current.Detail
+		status.BackupPath = current.BackupPath
+	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func moduleSetupIsTransient(state string) bool {
+	return state == "initializing" || state == "restarting" || state == "verifying"
 }
 
 func (a *app) setModuleSetup(status moduleSetupStatus) {
@@ -162,14 +174,14 @@ func (a *app) moduleSetupStartAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !body.Confirm {
-		writeError(w, http.StatusBadRequest, "需要确认后才会初始化模块")
+		writeError(w, http.StatusBadRequest, "需要确认后才会修改已识别配置并启用通话支持")
 		return
 	}
 	a.moduleSetupMu.RLock()
 	running := a.moduleSetup.State == "initializing" || a.moduleSetup.State == "restarting" || a.moduleSetup.State == "verifying"
 	a.moduleSetupMu.RUnlock()
 	if running {
-		writeError(w, http.StatusConflict, "模块初始化正在进行")
+		writeError(w, http.StatusConflict, "模块通话支持正在启用")
 		return
 	}
 	inspection := a.inspectModuleSetup()
@@ -177,7 +189,7 @@ func (a *app) moduleSetupStartAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, inspection.Summary)
 		return
 	}
-	a.setModuleSetup(moduleSetupStatus{State: "initializing", Summary: "正在备份并初始化模块", Detail: inspection.Detail})
+	a.setModuleSetup(moduleSetupStatus{State: "initializing", Summary: "正在备份并启用通话支持", Detail: inspection.Detail})
 	go a.runModuleSetup()
 	a.moduleSetupMu.RLock()
 	status := a.moduleSetup
@@ -193,11 +205,11 @@ func (a *app) runModuleSetup() {
 	}
 	original, err := parseUSBComposition(response)
 	if err != nil || !(original.isFactoryDJI() || original.isLegacyUACTarget() || original.isUACTarget()) {
-		detail := "模块 USB 配置已变化，停止初始化"
+		detail := "模块 USB 配置已变化，停止启用"
 		if err != nil {
 			detail = err.Error()
 		}
-		a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "初始化前校验未通过", Detail: detail})
+		a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "启用前校验未通过", Detail: detail})
 		return
 	}
 	backupPath, err := saveModuleSetupBackup(original)
@@ -252,9 +264,12 @@ func (a *app) runModuleSetup() {
 			continue
 		}
 		a.setModuleSetup(moduleSetupStatus{State: "verifying", Summary: "正在验证 4G、短信与通话路由", BackupPath: backupPath})
-		if err := a.ensureModuleVoiceRoute(); err == nil {
+		if err := a.ensureModuleVoiceRouteBudgeted(35 * time.Second); err == nil {
 			a.stopModuleVoiceRoute()
-			a.setModuleSetup(moduleSetupStatus{State: "ready", Summary: "模块初始化完成，可直接使用", BackupPath: backupPath})
+			a.setModuleSetup(moduleSetupStatus{State: "ready", Summary: "通话支持已启用，可直接使用", BackupPath: backupPath})
+			return
+		} else {
+			a.rollbackModuleSetup(original, backupPath, "通话路由验证失败："+err.Error())
 			return
 		}
 	}
@@ -306,7 +321,7 @@ func (a *app) rollbackModuleSetup(original usbComposition, backupPath, reason st
 		return
 	}
 	a.markUSBATDetached("module setup automatic rollback reboot")
-	a.setModuleSetup(moduleSetupStatus{State: "rolled_back", Summary: "初始化未验证，已恢复原始模块配置", Detail: reason, BackupPath: backupPath})
+	a.setModuleSetup(moduleSetupStatus{State: "rolled_back", Summary: "通话支持未验证，已恢复原始模块配置", Detail: reason, BackupPath: backupPath})
 }
 
 func saveModuleSetupBackup(composition usbComposition) (string, error) {

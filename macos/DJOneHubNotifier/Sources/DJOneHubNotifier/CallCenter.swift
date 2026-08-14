@@ -207,10 +207,7 @@ final class CallCenter: ObservableObject {
             }
             Task {
                 do {
-                    let config = try await self.api.maVoAudioHostConfig()
-                    guard config.routeReady else {
-                        throw APIError.http(409, "模块 UAC 语音路由尚未就绪")
-                    }
+                    let config = try await self.waitForMaVoRoute()
                     self.maVoAudio.startUAC(
                         vendorID: config.vendorID,
                         productID: config.productID,
@@ -234,6 +231,21 @@ final class CallCenter: ObservableObject {
                 }
             }
         }
+    }
+
+    private func waitForMaVoRoute() async throws -> MaVoAudioHostConfig {
+        let deadline = Date().addingTimeInterval(40)
+        while Date() < deadline {
+            let config = try await api.maVoAudioHostConfig()
+            if config.routeReady {
+                return config
+            }
+            if let routeError = config.routeError, !routeError.isEmpty {
+                throw APIError.http(409, "模块语音路由准备失败：\(routeError)")
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw APIError.http(409, "等待模块 UAC 语音路由超过 40 秒。请在设置中查看初始化诊断。")
     }
 
     func callDuration(now: Date = Date()) -> TimeInterval {

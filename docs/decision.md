@@ -1,4 +1,4 @@
-# DJOneHub v1.2.5 Public Release Decisions
+# DJOneHub v1.2.8 Public Release Decisions
 
 ## Accepted
 
@@ -25,6 +25,12 @@
 - V1.1 treats first-use voice preparation as a one-time App-guided operation,
   not a background mutation on module insertion. It must retain an exact local
   USB configuration backup and expose progress/recovery status.
+- Treat the known legacy UAC tuple as an eligible recoverable state, not as a
+  new module. The user-confirmed recovery path must either end ready or restore
+  the captured tuple and leave an actionable retry state.
+- A transient upstream runtime failure is not proof of an incompatible module:
+  try the pinned GitHub Raw endpoint, the pinned Contents API endpoint, and one
+  Raw retry; accept only data matching the fixed SHA-256.
 
 - Use one macOS Universal DMG for Apple Silicon and Intel.
 - Ship the independent SwiftUI App together with the Go backend.

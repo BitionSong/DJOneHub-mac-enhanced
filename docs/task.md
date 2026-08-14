@@ -1,8 +1,8 @@
-# DJOneHub v1.2.5 Public Release
+# DJOneHub v1.2.8 Public Release
 
 ## Current phase
 
-Prepare and publish the approved v1.2.5 release. The source and packages keep
+Prepare and publish the approved v1.2.8 release. The source and packages keep
 module-side runtime files external; first use remains confirmation-gated.
 
 ### Active follow-up: MaVo parity call route
@@ -43,6 +43,10 @@ module-side runtime files external; first use remains confirmation-gated.
   verify re-enumeration and existing SMS/4G after the operation.
 - [ ] Verify the full first-initialization workflow on a factory-default spare
   module before claiming it as hardware-proven.
+- [x] Make legacy UAC configurations eligible for the same confirmation-gated
+  recovery flow, with a terminal rollback state rather than an initialization loop.
+- [x] Add retry and official GitHub Contents API fallback for pinned runtime
+  downloads while retaining SHA-256 verification.
 
 ## Public-release boundaries
 

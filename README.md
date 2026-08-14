@@ -4,6 +4,12 @@
 
 DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供短信、4G、GPS、eSIM、来电及通话控制，不修改模块固件。
 
+## v1.2.8：通话支持恢复与运行时下载修复
+
+「设置 → 通话支持」现在同时识别原始模块配置和曾被其他工具改为旧 UAC 配置的模块。每次启用都会先备份当前 USB 配置；无法完成验证时自动恢复并显示原因，不会持续卡在初始化界面。
+
+语音运行时下载使用固定上游与 SHA-256 校验，增加 GitHub Contents API 回退和重试，以减少上游瞬时下载失败的影响。
+
 ## v1.2.6：新增 iPhone / iPad 上网短信模式
 
 独立 macOS App 集中管理拨号、通话、短信、通讯录和设置；来电与短信提醒不需要网页常驻。首次在「设置 → 语音运行时」确认后，App 会从固定上游来源下载指定版本、逐项校验 SHA-256 并缓存到本机；模块重启后自动复用缓存。
@@ -61,8 +67,8 @@ DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供
 
 | 平台 | 包 | 当前状态 |
 | --- | --- | --- |
-| macOS 13+ | `DJOneHub-macOS-universal-v1.2.6.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
-| Windows x86-64 | `DJOneHub-Windows-amd64-v1.2.6.zip` | 内含 `DJOneHub.exe`；尚未在真实 Windows + 模块上验证。 |
+| macOS 13+ | `DJOneHub-macOS-universal-v1.2.8.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
+| Windows x86-64 | `DJOneHub-Windows-amd64-v1.2.8.zip` | 内含 `DJOneHub.exe`；尚未在真实 Windows + 模块上验证。 |
 
 Windows 目前不承诺模块功能可用；它不提供 macOS 专用的 USB AT/eSIM、USB 4G 自动策略、原生通知、MapKit 或双向通话音频。
 
@@ -85,11 +91,11 @@ Mac 双向通话仍需要模块侧语音运行时。该运行时**不随本仓�
 
 ```sh
 # macOS Universal
-scripts/package-macos-universal.sh v1.2.6
-scripts/build-dmg-universal.sh v1.2.6
+scripts/package-macos-universal.sh v1.2.8
+scripts/build-dmg-universal.sh v1.2.8
 
 # Windows x86-64
-scripts/package-windows-amd64.sh v1.2.6
+scripts/package-windows-amd64.sh v1.2.8
 ```
 
 构建 macOS 包需要完整 Xcode、Go、`pkg-config` 与网络下载官方 libusb 源码。Windows 包在 Mac 上只能交叉编译，不能替代 Windows 真机验证。

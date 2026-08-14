@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,9 +20,16 @@ import (
 // On an explicit, user-confirmed request it is obtained from the original MaVo
 // repository at a pinned commit, verified by SHA-256, and stored locally.
 const (
-	upstreamVoiceRuntimeSource = "moluncn/mavo@0443dfdaf8aec086fd76ba2ee9152fd908114524"
-	upstreamVoiceRuntimeBase   = "https://raw.githubusercontent.com/moluncn/mavo/0443dfdaf8aec086fd76ba2ee9152fd908114524/Resources/ModuleVoice/"
+	upstreamVoiceRuntimeCommit  = "0443dfdaf8aec086fd76ba2ee9152fd908114524"
+	upstreamVoiceRuntimeSource  = "moluncn/mavo@" + upstreamVoiceRuntimeCommit
+	upstreamVoiceRuntimeBase    = "https://raw.githubusercontent.com/moluncn/mavo/" + upstreamVoiceRuntimeCommit + "/Resources/ModuleVoice/"
+	upstreamVoiceRuntimeAPIBase = "https://api.github.com/repos/moluncn/mavo/contents/Resources/ModuleVoice/"
 )
+
+type upstreamVoiceDownloadSource struct {
+	Name string
+	URL  string
+}
 
 type upstreamVoiceFile struct {
 	Name   string
@@ -122,7 +130,7 @@ func provisionUpstreamVoiceRuntime(ctx context.Context) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("无法创建语音运行时目录: %w", err)
 	}
-	client := &http.Client{Timeout: 45 * time.Second}
+	client := &http.Client{Timeout: 35 * time.Second}
 	for _, file := range upstreamVoiceFiles {
 		if err := downloadVerifiedVoiceFile(ctx, client, dir, file); err != nil {
 			return err
@@ -132,28 +140,64 @@ func provisionUpstreamVoiceRuntime(ctx context.Context) error {
 }
 
 func downloadVerifiedVoiceFile(ctx context.Context, client *http.Client, dir string, file upstreamVoiceFile) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamVoiceRuntimeBase+file.Name, nil)
-	if err != nil {
-		return err
+	// Retry the raw endpoint once through GitHub's official Contents API, then
+	// give the raw endpoint one final chance. Every response is still pinned to
+	// the same commit and rejected unless its expected SHA-256 matches.
+	return downloadVerifiedVoiceFileFromSources(ctx, client, dir, file, []upstreamVoiceDownloadSource{
+		{Name: "GitHub Raw", URL: upstreamVoiceRuntimeBase + file.Name},
+		{Name: "GitHub API", URL: upstreamVoiceRuntimeAPIBase + file.Name + "?ref=" + upstreamVoiceRuntimeCommit},
+		{Name: "GitHub Raw retry", URL: upstreamVoiceRuntimeBase + file.Name},
+	})
+}
+
+func downloadVerifiedVoiceFileFromSources(ctx context.Context, client *http.Client, dir string, file upstreamVoiceFile, sources []upstreamVoiceDownloadSource) error {
+	var failures []string
+	for index, source := range sources {
+		data, err := fetchVerifiedVoiceRuntimeFile(ctx, client, source, file)
+		if err == nil {
+			return writeVerifiedVoiceRuntimeFile(dir, file, data)
+		}
+		failures = append(failures, source.Name+": "+err.Error())
+		if index+1 < len(sources) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(index+1) * time.Second):
+			}
+		}
 	}
+	return fmt.Errorf("上游下载 %s 失败（可重试）：%s", file.Name, strings.Join(failures, "；"))
+}
+
+func fetchVerifiedVoiceRuntimeFile(ctx context.Context, client *http.Client, source upstreamVoiceDownloadSource, file upstreamVoiceFile) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/vnd.github.raw")
+	request.Header.Set("User-Agent", "DJOneHub")
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("从上游下载 %s 失败: %w", file.Name, err)
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("上游未提供 %s（HTTP %d）", file.Name, response.StatusCode)
+		return nil, fmt.Errorf("HTTP %d", response.StatusCode)
 	}
 	if response.ContentLength > 32<<20 {
-		return fmt.Errorf("上游文件 %s 超过安全大小限制", file.Name)
+		return nil, errors.New("文件超过安全大小限制")
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 32<<20+1))
 	if err != nil {
-		return fmt.Errorf("读取上游文件 %s 失败: %w", file.Name, err)
+		return nil, err
 	}
 	if len(data) > 32<<20 || !matchesSHA256(data, file.SHA256) {
-		return fmt.Errorf("上游文件 %s 的 SHA-256 不匹配，已拒绝安装", file.Name)
+		return nil, errors.New("SHA-256 不匹配，已拒绝安装")
 	}
+	return data, nil
+}
+
+func writeVerifiedVoiceRuntimeFile(dir string, file upstreamVoiceFile, data []byte) error {
 	tmp, err := os.CreateTemp(dir, "."+file.Name+"-*")
 	if err != nil {
 		return err

@@ -20,6 +20,19 @@ func TestParseUSBCompositionAndClassification(t *testing.T) {
 	}
 }
 
+func TestModuleSetupRollbackIsNotTransient(t *testing.T) {
+	for _, state := range []string{"initializing", "restarting", "verifying"} {
+		if !moduleSetupIsTransient(state) {
+			t.Fatalf("%q should be transient", state)
+		}
+	}
+	for _, state := range []string{"rolled_back", "failed", "ready", "needs_initialization"} {
+		if moduleSetupIsTransient(state) {
+			t.Fatalf("%q must return to inspection instead of remaining in progress", state)
+		}
+	}
+}
+
 func TestParseIMSConfiguration(t *testing.T) {
 	configuration, capability, err := parseIMSConfiguration("AT+QCFG=\"ims\"\r\n+QCFG: \"ims\",1,1\r\nOK")
 	if err != nil || configuration != 1 || capability != 1 {

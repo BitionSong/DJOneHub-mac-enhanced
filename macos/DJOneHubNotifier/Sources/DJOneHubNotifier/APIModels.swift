@@ -73,12 +73,14 @@ struct MaVoAudioHostConfig: Codable, Sendable {
     let productID: UInt16
     let locationID: UInt32
     let routeReady: Bool
+    let routeError: String?
 
     enum CodingKeys: String, CodingKey {
         case vendorID = "vendor_id"
         case productID = "product_id"
         case locationID = "location_id"
         case routeReady = "route_ready"
+        case routeError = "route_error"
     }
 }
 

@@ -4,8 +4,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -57,5 +61,35 @@ func TestVoiceStatusNeverClaimsBundledRuntime(t *testing.T) {
 	}
 	if status["runtime_source"] != upstreamVoiceRuntimeSource {
 		t.Fatalf("runtime_source = %#v, want %q", status["runtime_source"], upstreamVoiceRuntimeSource)
+	}
+}
+
+func TestVoiceRuntimeDownloadFallsBackAfterHTTP500(t *testing.T) {
+	payload := []byte("verified runtime fallback payload")
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "temporary upstream failure", http.StatusInternalServerError)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept"); got != "application/vnd.github.raw" {
+			t.Fatalf("Accept = %q", got)
+		}
+		_, _ = w.Write(payload)
+	}))
+	defer second.Close()
+
+	dir := t.TempDir()
+	sum := sha256.Sum256(payload)
+	file := upstreamVoiceFile{Name: "runtime.bin", Mode: 0o700, SHA256: fmt.Sprintf("%x", sum)}
+	err := downloadVerifiedVoiceFileFromSources(context.Background(), first.Client(), dir, file, []upstreamVoiceDownloadSource{
+		{Name: "primary", URL: first.URL},
+		{Name: "fallback", URL: second.URL},
+	})
+	if err != nil {
+		t.Fatalf("download fallback error = %v", err)
+	}
+	installed, err := os.ReadFile(dir + "/runtime.bin")
+	if err != nil || !bytes.Equal(installed, payload) {
+		t.Fatalf("installed runtime = %q, err=%v", installed, err)
 	}
 }

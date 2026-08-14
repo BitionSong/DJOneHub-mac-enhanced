@@ -1,8 +1,8 @@
-# DJOneHub v1.2.5 Public Release Architecture
+# DJOneHub v1.2.8 Public Release Architecture
 
 ## Product goal
 
-Prepare a reviewable public-source v1.2.4 package. It contains all redistributable
+Prepare a reviewable public-source v1.2.8 package. It contains all redistributable
 application code and desktop deployment, but never redistributes module-side
 voice runtime binaries.
 
@@ -16,8 +16,9 @@ voice runtime binaries.
 - First-module onboarding is a local, confirmation-gated workflow: inspect the
   USB composition read-only, snapshot the original tuple, enable the supported
   USB audio composition, wait for re-enumeration, then verify AT/4G/SMS/voice
-  readiness. A failed voice-verification step attempts to restore the captured
-  tuple and reports the result explicitly.
+  readiness. Factory and known legacy-UAC tuples share this workflow. A failed
+  voice-verification step restores the captured tuple, exits the active state,
+  and reports the result explicitly.
 - Release format: one Universal DMG containing arm64 + x86_64 backend and
   SwiftUI App, installer, uninstaller, notices and checksums. No `.ko` or
   `.armv7` module-side runtime file may be included.
@@ -47,7 +48,8 @@ voice runtime binaries.
 - Failed audio-bridge experiments are excluded from the release candidate.
 - The MaVo MIT audio adaptation remains source-visible. The module-side runtime
   is external to the repository and release archive. After one explicit App
-  confirmation, DJOneHub may fetch only a pinned upstream MaVo artifact URL,
+  confirmation, DJOneHub may fetch only a pinned upstream MaVo artifact URL
+  (Raw endpoint, then GitHub Contents API fallback, then one Raw retry),
   verify each file's SHA-256, cache it locally and deploy it transiently to the
   connected module. The public package never mirrors or embeds that runtime.
 

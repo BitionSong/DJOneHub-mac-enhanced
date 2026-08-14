@@ -640,6 +640,7 @@ func (a *app) audioHostConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	a.moduleVoiceMu.Lock()
 	routeReady := a.moduleVoiceReady
+	routeError := a.moduleVoiceErr
 	a.moduleVoiceMu.Unlock()
 	a.callMu.RLock()
 	hostEnabled := a.swiftAudioHost
@@ -649,6 +650,7 @@ func (a *app) audioHostConfig(w http.ResponseWriter, _ *http.Request) {
 		"product_id":   uint16(parse(device.ProductID)),
 		"location_id":  uint32(parse(device.LocationID)),
 		"route_ready":  routeReady,
+		"route_error":  routeError,
 		"host_enabled": hostEnabled,
 	})
 }

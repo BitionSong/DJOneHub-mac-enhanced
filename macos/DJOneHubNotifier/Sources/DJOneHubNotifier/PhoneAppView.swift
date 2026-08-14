@@ -1888,7 +1888,7 @@ private struct SettingsView: View {
                     MoreSectionTitle(L10n.t("状态"))
                     DeviceStatusCard()
 
-                    MoreSectionTitle("模块初始化")
+                    MoreSectionTitle("通话支持")
                     ModuleSetupCard()
 
                     MoreSectionTitle("语音运行时")
@@ -2018,7 +2018,7 @@ private struct ModuleSetupCard: View {
                 Button {
                     showConfirm = true
                 } label: {
-                    Label("初始化通话能力", systemImage: "wand.and.stars")
+                    Label("启用通话支持", systemImage: "wand.and.stars")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -2038,11 +2038,11 @@ private struct ModuleSetupCard: View {
         .padding(12)
         .modifier(PhoneCard())
         .task { refresh() }
-        .alert("初始化通话能力？", isPresented: $showConfirm) {
-            Button("初始化", role: .destructive) { initialize() }
+        .alert("启用通话支持？", isPresented: $showConfirm) {
+            Button("启用", role: .destructive) { initialize() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将备份模块 USB 配置，启用音频接口并重启模块。过程中 4G 会短暂断开；失败时保留回滚备份。")
+            Text("兼容原始模块和旧 UAC 配置。将先备份当前 USB 配置，再补齐通话所需接口并重启模块；过程中 4G 会短暂断开。验证失败会自动恢复原始配置，并显示具体原因。")
         }
     }
 

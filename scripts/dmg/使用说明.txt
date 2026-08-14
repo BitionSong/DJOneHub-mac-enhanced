@@ -1,4 +1,4 @@
-DJOneHub v1.2.5 · Mac 实体 SIM 终端
+DJOneHub · Mac 实体 SIM 终端
 ================================
 
 【安装】
