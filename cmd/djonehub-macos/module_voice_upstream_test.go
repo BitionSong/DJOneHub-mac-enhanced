@@ -2,7 +2,12 @@
 
 package main
 
-import "testing"
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestUpstreamVoiceManifestIsComplete(t *testing.T) {
 	manifest, err := loadVoiceManifest()
@@ -32,5 +37,25 @@ func TestMatchesSHA256(t *testing.T) {
 	}
 	if matchesSHA256(data, "0000000000000000000000000000000000000000000000000000000000000000") {
 		t.Fatal("incorrect SHA-256 matched")
+	}
+}
+
+func TestVoiceProvisionRequiresConfirmation(t *testing.T) {
+	instance := &app{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/voice/provision", bytes.NewBufferString(`{"confirm":false}`))
+	instance.voiceProvisionAPI(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("voiceProvisionAPI() status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestVoiceStatusNeverClaimsBundledRuntime(t *testing.T) {
+	status := (&app{}).voiceStatus()
+	if status["runtime_included"] != false {
+		t.Fatalf("runtime_included = %#v, want false", status["runtime_included"])
+	}
+	if status["runtime_source"] != upstreamVoiceRuntimeSource {
+		t.Fatalf("runtime_source = %#v, want %q", status["runtime_source"], upstreamVoiceRuntimeSource)
 	}
 }
