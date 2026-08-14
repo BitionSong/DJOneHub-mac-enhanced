@@ -31,6 +31,7 @@ swift build --disable-sandbox -c release
 # the Intel slice explicitly, including the two local C targets used by the
 # notifier. This avoids claiming a universal app while silently shipping arm64.
 INTEL_ROOT="${BUILD_ROOT}/notifier-x86_64"
+rm -rf "${INTEL_ROOT}"
 mkdir -p "${INTEL_ROOT}/module-cache"
 cat > "${INTEL_ROOT}/CModemBridge.modulemap" <<EOF
 module CModemBridge { header "${NOTIFIER_SRC}/Sources/CModemBridge/include/CModemBridge.h" export * }
