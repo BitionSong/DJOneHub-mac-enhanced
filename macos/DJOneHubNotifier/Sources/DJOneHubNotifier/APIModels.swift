@@ -140,6 +140,22 @@ struct ModuleSetupStatus: Codable, Sendable {
     }
 }
 
+struct VoiceRuntimeStatus: Codable, Sendable {
+    let ready: Bool
+    let runtimeInstalled: Bool
+    let runtimeSource: String?
+    let runtimeDetail: String?
+    let lastError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ready
+        case runtimeInstalled = "runtime_installed"
+        case runtimeSource = "runtime_source"
+        case runtimeDetail = "runtime_detail"
+        case lastError = "last_error"
+    }
+}
+
 enum APIError: LocalizedError {
     case invalidResponse
     case http(Int, String?)
@@ -201,6 +217,14 @@ struct DJOneHubAPI: Sendable {
 
     func moduleSetupStatus() async throws -> ModuleSetupStatus {
         try await get(path: "api/module/setup")
+    }
+
+    func voiceRuntimeStatus() async throws -> VoiceRuntimeStatus {
+        try await get(path: "api/voice/status")
+    }
+
+    func provisionVoiceRuntime() async throws -> VoiceRuntimeStatus {
+        try await postDecoded(path: "api/voice/provision", body: ["confirm": true])
     }
 
     func initializeModule() async throws -> ModuleSetupStatus {

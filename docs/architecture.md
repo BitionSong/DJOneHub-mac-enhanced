@@ -46,7 +46,10 @@ voice runtime binaries.
   package.
 - Failed audio-bridge experiments are excluded from the release candidate.
 - The MaVo MIT audio adaptation remains source-visible. The module-side runtime
-  is external only and is never downloaded or installed by public packages.
+  is external to the repository and release archive. After one explicit App
+  confirmation, DJOneHub may fetch only a pinned upstream MaVo artifact URL,
+  verify each file's SHA-256, cache it locally and deploy it transiently to the
+  connected module. The public package never mirrors or embeds that runtime.
 
 ## Validation model
 
