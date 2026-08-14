@@ -19,7 +19,7 @@ func TestParseUSBCompositionAndClassification(t *testing.T) {
 		t.Fatalf("DJI full UAC parse = %#v, %v", djiUAC, err)
 	}
 	legacyUAC, err := parseUSBComposition(`+QCFG: "usbcfg",0x2C7C,0x125,1,1,1,1,1,0,1`)
-	if err != nil || !legacyUAC.isLegacyUACTarget() || legacyUAC.hasADB() {
+	if err != nil || !legacyUAC.isLegacyUACTarget() || !legacyUAC.isCallAudioCapable() || legacyUAC.hasADB() {
 		t.Fatalf("legacy UAC parse = %#v, %v", legacyUAC, err)
 	}
 	if got := factory.command(); got != `AT+QCFG="USBCFG",0x2CA3,0x4006,1,1,1,1,1,0,0` {
@@ -56,6 +56,15 @@ func TestModuleSetupTerminalStatesAreServedFromCache(t *testing.T) {
 	}
 	if moduleSetupIsCachedTerminal("needs_initialization") {
 		t.Fatal("an uninitialized module must still be inspected on first use")
+	}
+}
+
+func TestUSBCFGErrorIsTransientDuringReenumeration(t *testing.T) {
+	if !atResponseIsError("AT+QCFG=\"USBCFG\"\r\nERROR") {
+		t.Fatal("USBCFG ERROR must be detected as a transient AT response")
+	}
+	if atResponseIsError(`+QCFG: "usbcfg",0x2C7C,0x0125,1,1,1,1,1,1,1\r\nOK`) {
+		t.Fatal("a valid USBCFG response must not be classified as an error")
 	}
 }
 

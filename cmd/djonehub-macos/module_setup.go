@@ -64,6 +64,14 @@ func (c usbComposition) isLegacyUACTarget() bool {
 		len(c.Flags) == 7 && strings.Join(intSliceStrings(c.Flags), ",") == "1,1,1,1,1,0,1"
 }
 
+// isCallAudioCapable covers both known module USB Audio compositions. Some
+// QDC507 revisions expose UAC with ADB disabled and acknowledge, but retain,
+// that legacy bit layout. Rewriting it to the full ADB layout is unnecessary
+// for call audio and makes a successful no-op look like a failed setup.
+func (c usbComposition) isCallAudioCapable() bool {
+	return c.isUACTarget() || c.isLegacyUACTarget()
+}
+
 func (c usbComposition) isFactoryDJI() bool {
 	return c.VendorID == djiUSBVendorID && c.ProductID == djiUSBProductID &&
 		len(c.Flags) == 7 && strings.Join(intSliceStrings(c.Flags), ",") == "1,1,1,1,1,0,0"
@@ -142,9 +150,17 @@ func (a *app) inspectModuleSetup() moduleSetupStatus {
 	}
 	composition, err := parseUSBComposition(response)
 	if err != nil {
+		// A USB-profile write is followed by a modem reboot and a period where
+		// the AT channel is already visible but QCFG has not become readable.
+		// ERROR at this point is transient; presenting it as an unsupported
+		// composition wrongly blocks the user from simply waiting for the
+		// expected re-enumeration to finish.
+		if atResponseIsError(response) {
+			return moduleSetupStatus{State: "reconnecting", Summary: "正在重新连接并读取 USB 配置", Detail: "模块正处于 USB 模式切换阶段，请稍候自动重试", UpdatedAt: time.Now().Format(time.RFC3339)}
+		}
 		return moduleSetupStatus{State: "unsupported", Summary: "无法识别模块 USB 配置", Detail: err.Error(), UpdatedAt: time.Now().Format(time.RFC3339)}
 	}
-	if composition.isUACTarget() {
+	if composition.isCallAudioCapable() {
 		imsResponse, imsErr := a.runATCommand(`AT+QCFG="ims"`, 3*time.Second)
 		imsConfig, volteCapability, parseErr := parseIMSConfiguration(imsResponse)
 		if imsErr == nil && parseErr == nil && imsConfig == 1 && volteCapability == 1 {
@@ -154,9 +170,6 @@ func (a *app) inspectModuleSetup() moduleSetupStatus {
 	}
 	if composition.isFactoryDJI() {
 		return moduleSetupStatus{State: "needs_initialization", Summary: "发现原始 USB 配置，可启用通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
-	}
-	if composition.isLegacyUACTarget() {
-		return moduleSetupStatus{State: "needs_initialization", Summary: "发现旧 UAC 配置，可补齐通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
 	}
 	if composition.isRecoverable() {
 		return moduleSetupStatus{State: "needs_initialization", Summary: "发现可恢复 USB 配置，可重新启用通话支持", Detail: composition.command(), CanInitialize: true, RequiresConfirmation: true, UpdatedAt: time.Now().Format(time.RFC3339)}
@@ -263,20 +276,23 @@ func (a *app) runModuleSetup() {
 		a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "无法保存模块回滚备份", Detail: err.Error()})
 		return
 	}
-	// This is the documented UAC composition. The modem is allowed to reject
-	// unsupported bits; the exact read-back below decides whether to reboot.
-	target := usbComposition{VendorID: quectelUSBVendorID, ProductID: quectelUSBProductID, Flags: []int{1, 1, 1, 1, 1, 1, 1}}
-	write, err := a.runATCommand(target.command(), 8*time.Second)
-	if err != nil || atResponseIsError(write) {
-		a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "模块拒绝 USB 音频配置", Detail: firstNonEmpty(errString(err), write), BackupPath: backupPath})
-		return
-	}
-	readBack, err := a.runATCommand(`AT+QCFG="USBCFG"`, 5*time.Second)
-	actual, parseErr := parseUSBComposition(readBack)
-	if err != nil || parseErr != nil || !actual.isUACTarget() {
-		detail := firstNonEmpty(errString(err), errString(parseErr), readBack)
-		a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "USB 配置回读未确认，未重启模块", Detail: detail, BackupPath: backupPath})
-		return
+	// Preserve either observed UAC layout. Legacy UAC already exposes the
+	// module audio interface, so forcing its ADB flag to 1 provides no benefit
+	// and some firmware keeps the flag unchanged despite returning OK.
+	if !original.isCallAudioCapable() {
+		target := usbComposition{VendorID: quectelUSBVendorID, ProductID: quectelUSBProductID, Flags: []int{1, 1, 1, 1, 1, 1, 1}}
+		write, err := a.runATCommand(target.command(), 8*time.Second)
+		if err != nil || atResponseIsError(write) {
+			a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "模块拒绝 USB 音频配置", Detail: firstNonEmpty(errString(err), write), BackupPath: backupPath})
+			return
+		}
+		readBack, err := a.runATCommand(`AT+QCFG="USBCFG"`, 5*time.Second)
+		actual, parseErr := parseUSBComposition(readBack)
+		if err != nil || parseErr != nil || !actual.isCallAudioCapable() {
+			detail := firstNonEmpty(errString(err), errString(parseErr), readBack)
+			a.setModuleSetup(moduleSetupStatus{State: "failed", Summary: "USB 配置回读未确认，未重启模块", Detail: detail, BackupPath: backupPath})
+			return
+		}
 	}
 	volteResponse, err := a.runATCommand(`AT+QCFG="volte_disable"`, 5*time.Second)
 	if err != nil || !strings.Contains(strings.ReplaceAll(strings.ToLower(volteResponse), "_", "/"), `"volte/disable",0`) {

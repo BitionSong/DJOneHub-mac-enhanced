@@ -2050,7 +2050,7 @@ private struct ModuleSetupCard: View {
         switch status?.state {
         case "ready": return "checkmark.circle.fill"
         case "needs_initialization": return "sparkles"
-        case "initializing", "restarting", "verifying": return "arrow.triangle.2.circlepath"
+        case "initializing", "restarting", "verifying", "reconnecting": return "arrow.triangle.2.circlepath"
         case "failed", "unsupported": return "exclamationmark.triangle.fill"
         default: return "antenna.radiowaves.left.and.right"
         }
@@ -2076,7 +2076,13 @@ private struct ModuleSetupCard: View {
         Task {
             do {
                 let next = try await api.moduleSetupStatus()
-                await MainActor.run { status = next; isLoading = false }
+                await MainActor.run {
+                    status = next
+                    isLoading = next.state == "reconnecting"
+                }
+                if next.state == "reconnecting" {
+                    await waitForModuleSetupCompletion()
+                }
             } catch {
                 await MainActor.run { errorText = error.localizedDescription; isLoading = false }
             }
@@ -2096,7 +2102,7 @@ private struct ModuleSetupCard: View {
                 // that a failure, so the UI never encourages a duplicate
                 // initialization write.
                 let recovered = try? await api.moduleSetupStatus()
-                if let recovered, ["initializing", "restarting", "verifying"].contains(recovered.state) {
+                if let recovered, isModuleSetupPending(recovered.state) {
                     await MainActor.run { status = recovered }
                 } else {
                     await MainActor.run {
@@ -2119,7 +2125,7 @@ private struct ModuleSetupCard: View {
             try? await Task.sleep(for: .seconds(2))
             guard let next = try? await api.moduleSetupStatus() else { continue }
             await MainActor.run { status = next }
-            if !["initializing", "restarting", "verifying"].contains(next.state) {
+            if !isModuleSetupPending(next.state) {
                 await MainActor.run { isLoading = false }
                 return
             }
@@ -2128,6 +2134,10 @@ private struct ModuleSetupCard: View {
             isLoading = false
             errorText = "模块仍在重新连接，请点击刷新查看状态。"
         }
+    }
+
+    private func isModuleSetupPending(_ state: String) -> Bool {
+        ["initializing", "restarting", "verifying", "reconnecting"].contains(state)
     }
 }
 
