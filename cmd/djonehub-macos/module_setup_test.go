@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestParseUSBCompositionAndClassification(t *testing.T) {
 	factory, err := parseUSBComposition(`+QCFG: "usbcfg",0x2CA3,0x4006,1,1,1,1,1,0,0`)
@@ -10,6 +13,10 @@ func TestParseUSBCompositionAndClassification(t *testing.T) {
 	uac, err := parseUSBComposition("AT+QCFG=\"USBCFG\"\r\n+QCFG: \"usbcfg\",0x2C7C,0x125,1,1,1,1,1,1,1\r\nOK")
 	if err != nil || !uac.hasUAC() || !uac.hasADB() || !uac.isUACTarget() {
 		t.Fatalf("UAC parse = %#v, %v", uac, err)
+	}
+	djiUAC, err := parseUSBComposition(`+QCFG: "usbcfg",0x2CA3,0x4006,1,1,1,1,1,1,1`)
+	if err != nil || !djiUAC.hasUAC() || !djiUAC.hasADB() || !djiUAC.isUACTarget() {
+		t.Fatalf("DJI full UAC parse = %#v, %v", djiUAC, err)
 	}
 	legacyUAC, err := parseUSBComposition(`+QCFG: "usbcfg",0x2C7C,0x125,1,1,1,1,1,0,1`)
 	if err != nil || !legacyUAC.isLegacyUACTarget() || legacyUAC.hasADB() {
@@ -33,6 +40,17 @@ func TestModuleSetupRollbackIsNotTransient(t *testing.T) {
 	}
 }
 
+func TestModuleSetupTerminalStatesAreServedFromCache(t *testing.T) {
+	for _, state := range []string{"ready", "failed", "rolled_back"} {
+		if !moduleSetupIsCachedTerminal(state) {
+			t.Fatalf("%q should be served without a synchronous USB query", state)
+		}
+	}
+	if moduleSetupIsCachedTerminal("needs_initialization") {
+		t.Fatal("an uninitialized module must still be inspected on first use")
+	}
+}
+
 func TestParseIMSConfiguration(t *testing.T) {
 	configuration, capability, err := parseIMSConfiguration("AT+QCFG=\"ims\"\r\n+QCFG: \"ims\",1,1\r\nOK")
 	if err != nil || configuration != 1 || capability != 1 {
@@ -41,5 +59,27 @@ func TestParseIMSConfiguration(t *testing.T) {
 	configuration, capability, err = parseIMSConfiguration(`+QCFG: "ims",2,0`)
 	if err != nil || configuration != 2 || capability != 0 {
 		t.Fatalf("disabled IMS parse = %d,%d err=%v", configuration, capability, err)
+	}
+}
+
+func TestUSBProfileIntentDefaultsToNoAutomaticRestore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usb-profile-intent.json")
+	a := &app{usbProfileIntentPath: path}
+	if err := a.loadUSBProfileIntentLocked(); err != nil {
+		t.Fatalf("load blank intent: %v", err)
+	}
+	if a.usbProfileMobileArmed {
+		t.Fatal("a fresh installation must not automatically change a non-UAC module")
+	}
+	a.usbProfileMobileArmed = true
+	if err := a.persistUSBProfileIntentLocked(); err != nil {
+		t.Fatalf("persist mobile intent: %v", err)
+	}
+	reloaded := &app{usbProfileIntentPath: path}
+	if err := reloaded.loadUSBProfileIntentLocked(); err != nil {
+		t.Fatalf("reload intent: %v", err)
+	}
+	if !reloaded.usbProfileMobileArmed {
+		t.Fatal("an explicit iPhone/iPad selection must survive the reconnect")
 	}
 }

@@ -238,7 +238,11 @@ struct DJOneHubAPI: Sendable {
     }
 
     func initializeModule() async throws -> ModuleSetupStatus {
-        try await postDecoded(path: "api/module/setup", body: ["confirm": true])
+        // The endpoint returns as soon as the background state machine starts,
+        // but USB AT can be briefly serialized by an SMS/status read. Give that
+        // harmless admission check enough room instead of presenting a false
+        // timeout while the module has already begun re-enumerating.
+        try await postDecoded(path: "api/module/setup", body: ["confirm": true], timeout: 20)
     }
 
     func rejectCall() async throws -> RejectResponse {

@@ -2,7 +2,7 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VERSION=${1:-v1.2.8}
+VERSION=${1:-v1.2.9}
 DMG_NAME="DJOneHub-macOS-universal-${VERSION}.dmg"
 STAGE="${ROOT_DIR}/dist/dmg-stage-universal"
 DMG="${ROOT_DIR}/dist/${DMG_NAME}"
@@ -58,6 +58,7 @@ xcrun swiftc -O -target x86_64-apple-macosx13.0 -sdk "$(xcrun --show-sdk-path)" 
   -framework CoreAudio -framework CoreFoundation -framework IOKit -framework AVFoundation \
   -framework AppKit -framework UserNotifications -framework Contacts \
   -o "${INTEL_ROOT}/DJOneHubNotifier"
+rm -f "${BUILD_ROOT}/DJOneHubNotifier-universal"
 lipo -create "${NOTIFIER_SRC}/.build/release/DJOneHubNotifier" "${INTEL_ROOT}/DJOneHubNotifier" \
   -output "${BUILD_ROOT}/DJOneHubNotifier-universal"
 file "${BUILD_ROOT}/DJOneHubNotifier-universal" | cut -c1-120

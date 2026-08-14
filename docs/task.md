@@ -1,8 +1,8 @@
-# DJOneHub v1.2.8 Public Release
+# DJOneHub v1.2.9 Public Release
 
 ## Current phase
 
-Prepare and publish the approved v1.2.8 release. The source and packages keep
+Prepare and publish the approved v1.2.9 release. The source and packages keep
 module-side runtime files external; first use remains confirmation-gated.
 
 ### Active follow-up: MaVo parity call route

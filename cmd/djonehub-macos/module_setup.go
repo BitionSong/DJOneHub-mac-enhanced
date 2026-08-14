@@ -48,8 +48,15 @@ func (c usbComposition) hasADB() bool {
 }
 
 func (c usbComposition) isUACTarget() bool {
-	return c.VendorID == quectelUSBVendorID && c.ProductID == quectelUSBProductID &&
-		len(c.Flags) == 7 && strings.Join(intSliceStrings(c.Flags), ",") == "1,1,1,1,1,1,1"
+	// Both identities are observed valid complete-audio compositions. A module
+	// may retain DJI's original VID/PID while exposing the full UAC + ADB flag
+	// set; it must be treated as ready-capable rather than offered a destructive
+	// initialization flow merely to rewrite its identity.
+	if len(c.Flags) != 7 || strings.Join(intSliceStrings(c.Flags), ",") != "1,1,1,1,1,1,1" {
+		return false
+	}
+	return (c.VendorID == quectelUSBVendorID && c.ProductID == quectelUSBProductID) ||
+		(c.VendorID == djiUSBVendorID && c.ProductID == djiUSBProductID)
 }
 
 func (c usbComposition) isLegacyUACTarget() bool {
@@ -142,7 +149,11 @@ func (a *app) moduleSetupStatusAPI(w http.ResponseWriter, _ *http.Request) {
 	a.moduleSetupMu.RLock()
 	current := a.moduleSetup
 	a.moduleSetupMu.RUnlock()
-	if moduleSetupIsTransient(current.State) {
+	// Setup is an adoption state machine, not a live modem health probe. Once
+	// it has reached a terminal state in this process, return that result
+	// immediately. Re-running synchronous USB AT inspection here makes the App
+	// appear to time out during the normal USB re-enumeration window.
+	if moduleSetupIsTransient(current.State) || moduleSetupIsCachedTerminal(current.State) {
 		writeJSON(w, http.StatusOK, current)
 		return
 	}
@@ -157,6 +168,10 @@ func (a *app) moduleSetupStatusAPI(w http.ResponseWriter, _ *http.Request) {
 
 func moduleSetupIsTransient(state string) bool {
 	return state == "initializing" || state == "restarting" || state == "verifying"
+}
+
+func moduleSetupIsCachedTerminal(state string) bool {
+	return state == "ready" || state == "failed" || state == "rolled_back"
 }
 
 func (a *app) setModuleSetup(status moduleSetupStatus) {

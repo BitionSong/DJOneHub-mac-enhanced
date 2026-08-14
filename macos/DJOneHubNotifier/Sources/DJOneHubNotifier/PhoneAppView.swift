@@ -2089,12 +2089,44 @@ private struct ModuleSetupCard: View {
         Task {
             do {
                 let next = try await api.initializeModule()
-                await MainActor.run { status = next; isLoading = false }
-                try? await Task.sleep(for: .seconds(4))
-                await MainActor.run { refresh() }
+                await MainActor.run { status = next }
             } catch {
-                await MainActor.run { errorText = error.localizedDescription; isLoading = false }
+                // A module reboot can close the local request while the
+                // accepted setup continues. Inspect its state before calling
+                // that a failure, so the UI never encourages a duplicate
+                // initialization write.
+                let recovered = try? await api.moduleSetupStatus()
+                if let recovered, ["initializing", "restarting", "verifying"].contains(recovered.state) {
+                    await MainActor.run { status = recovered }
+                } else {
+                    await MainActor.run {
+                        status = recovered
+                        errorText = error.localizedDescription
+                        isLoading = false
+                    }
+                    return
+                }
             }
+            await waitForModuleSetupCompletion()
+        }
+    }
+
+    private func waitForModuleSetupCompletion() async {
+        // The module restart normally completes within a minute. During that
+        // interval keep the action disabled and render the server state rather
+        // than a client-side timeout.
+        for _ in 0..<50 {
+            try? await Task.sleep(for: .seconds(2))
+            guard let next = try? await api.moduleSetupStatus() else { continue }
+            await MainActor.run { status = next }
+            if !["initializing", "restarting", "verifying"].contains(next.state) {
+                await MainActor.run { isLoading = false }
+                return
+            }
+        }
+        await MainActor.run {
+            isLoading = false
+            errorText = "模块仍在重新连接，请点击刷新查看状态。"
         }
     }
 }
