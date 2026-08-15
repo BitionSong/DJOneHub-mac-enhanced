@@ -4,6 +4,15 @@
 
 DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供短信、4G、GPS、eSIM、来电及通话控制，不修改模块固件。
 
+## v1.2.9：模块初始化与旧 UAC 兼容
+
+[下载 v1.2.9](https://github.com/rogerbush007-a11y/DJOneHub-mac-enhanced/releases/tag/v1.2.9)
+
+- 新模块、原始 DJI 配置、旧 UAC 与其他工具留下的完整 USB 配置均可识别；启用前会先备份，失败自动回滚。
+- 旧 UAC `…1,1,1,1,1,0,1` 已具备 USB Audio，不再强写 ADB 位；仅补齐 IMS / VoLTE，避免模块返回 `OK` 但配置未变化时被误判为失败。
+- USB 模式切换、重启和重新枚举期间的临时 `USBCFG ERROR` 会显示为自动重连并继续检查，不再误报“无法识别模块 USB 配置”。
+- 修复重新枚举后保留旧“已就绪”缓存、以及 v1.2.8 安装包误带入旧通知 App 的问题；iPhone / iPad 连接模式入口已恢复。
+
 ## v1.2.8：通话支持恢复与运行时下载修复
 
 「设置 → 通话支持」现在同时识别原始模块配置和曾被其他工具改为旧 UAC 配置的模块。每次启用都会先备份当前 USB 配置；无法完成验证时自动恢复并显示原因，不会持续卡在初始化界面。
@@ -67,8 +76,8 @@ DJOneHub 是一个非官方开源项目。它通过模块已有 USB 接口提供
 
 | 平台 | 包 | 当前状态 |
 | --- | --- | --- |
-| macOS 13+ | `DJOneHub-macOS-universal-v1.2.8.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
-| Windows x86-64 | `DJOneHub-Windows-amd64-v1.2.8.zip` | 内含 `DJOneHub.exe`；尚未在真实 Windows + 模块上验证。 |
+| macOS 13+ | `DJOneHub-macOS-universal-v1.2.9.dmg` | Apple Silicon 实机验证；包内含 arm64 + x86_64，Intel 尚未真机验证。 |
+| Windows x86-64 | `DJOneHub-Windows-amd64-v1.2.9.zip` | 内含 `DJOneHub.exe`；尚未在真实 Windows + 模块上验证。 |
 
 Windows 目前不承诺模块功能可用；它不提供 macOS 专用的 USB AT/eSIM、USB 4G 自动策略、原生通知、MapKit 或双向通话音频。
 
@@ -91,11 +100,11 @@ Mac 双向通话仍需要模块侧语音运行时。该运行时**不随本仓�
 
 ```sh
 # macOS Universal
-scripts/package-macos-universal.sh v1.2.8
-scripts/build-dmg-universal.sh v1.2.8
+scripts/package-macos-universal.sh v1.2.9
+scripts/build-dmg-universal.sh v1.2.9
 
 # Windows x86-64
-scripts/package-windows-amd64.sh v1.2.8
+scripts/package-windows-amd64.sh v1.2.9
 ```
 
 构建 macOS 包需要完整 Xcode、Go、`pkg-config` 与网络下载官方 libusb 源码。Windows 包在 Mac 上只能交叉编译，不能替代 Windows 真机验证。

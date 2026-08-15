@@ -31,6 +31,9 @@
 - A transient upstream runtime failure is not proof of an incompatible module:
   try the pinned GitHub Raw endpoint, the pinned Contents API endpoint, and one
   Raw retry; accept only data matching the fixed SHA-256.
+- Treat `2CA3:4006` with the complete `1,1,1,1,1,1,1` flag tuple as an
+  already audio-capable DJI identity. Do not offer initialization just because
+  it is not rewritten to Quectel's VID/PID.
 
 - Use one macOS Universal DMG for Apple Silicon and Intel.
 - Ship the independent SwiftUI App together with the Go backend.

@@ -19,6 +19,9 @@ voice runtime binaries.
   readiness. Factory and known legacy-UAC tuples share this workflow. A failed
   voice-verification step restores the captured tuple, exits the active state,
   and reports the result explicitly.
+- A complete UAC tuple may retain either the original DJI VID/PID or the
+  Quectel VID/PID. Both are read-only recognized as ready-capable; neither is
+  rewritten solely to change USB identity.
 - Release format: one Universal DMG containing arm64 + x86_64 backend and
   SwiftUI App, installer, uninstaller, notices and checksums. No `.ko` or
   `.armv7` module-side runtime file may be included.

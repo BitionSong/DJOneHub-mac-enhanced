@@ -150,8 +150,11 @@ type app struct {
 	disabled4GServices  []string
 	networkPolicyPath   string
 
-	networkRepairMu sync.Mutex
-	usbProfileMu    sync.Mutex
+	networkRepairMu        sync.Mutex
+	usbProfileMu           sync.Mutex
+	usbProfileIntentLoaded bool
+	usbProfileMobileArmed  bool
+	usbProfileIntentPath   string
 
 	usbATOpenMu      sync.Mutex
 	recoveryMu       sync.Mutex
@@ -342,7 +345,10 @@ func main() {
 				}
 				if instance.usbAT != nil {
 					instance.initUSBATESIMManager()
-					instance.ensureCellularDHCP()
+					// Network repair can wait through two DHCP attempts. Do not
+					// hold the local API listener hostage during startup: the App
+					// must be able to show module/setup progress while 4G settles.
+					go instance.ensureCellularDHCP()
 				}
 			}
 			log.Printf("modem discovery skipped: %v", err)
@@ -858,11 +864,22 @@ func (a *app) ensureUSBAT() error {
 	return nil
 }
 
-// autoEnableMacAudioProfile restores UAC only when this Mac receives a module
-// deliberately prepared for iPhone/iPad use. It keeps every other USB function
-// returned by the module unchanged.
+// autoEnableMacAudioProfile restores UAC only after this installation explicitly
+// saved iPhone/iPad mode. A newly installed App must never infer intent from a
+// non-UAC USB tuple: that tuple may be an untouched factory module or a module
+// configured by another tool.
 func (a *app) autoEnableMacAudioProfile() (bool, error) {
 	if a.demo || a.usbAT == nil {
+		return false, nil
+	}
+	a.usbProfileMu.Lock()
+	err := a.loadUSBProfileIntentLocked()
+	armed := a.usbProfileMobileArmed
+	a.usbProfileMu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	if !armed {
 		return false, nil
 	}
 	response, err := a.usbAT.Command(`AT+QCFG="usbcfg"`, 8*time.Second)
@@ -879,6 +896,13 @@ func (a *app) autoEnableMacAudioProfile() (bool, error) {
 	if _, err := a.usbAT.Command(config.withUAC(true), 8*time.Second); err != nil {
 		return false, err
 	}
+	a.usbProfileMu.Lock()
+	a.usbProfileMobileArmed = false
+	if err := a.persistUSBProfileIntentLocked(); err != nil {
+		a.usbProfileMu.Unlock()
+		return false, err
+	}
+	a.usbProfileMu.Unlock()
 	if _, err := a.usbAT.Command("AT+CFUN=1,1", 3*time.Second); err != nil {
 		return false, err
 	}
@@ -943,6 +967,9 @@ func (a *app) markUSBATDetached(reason string) {
 	a.discoveryError = "DJI USB device is not connected"
 	a.usbATBackoffUntil = time.Now().Add(2 * time.Second)
 	a.usbATBackoffErr = reason
+	// A module reboot or re-enumeration can change USBCFG outside this process.
+	// Do not keep reporting a previously cached "ready" state in that case.
+	a.invalidateReadyModuleSetup()
 	a.callMu.Lock()
 	a.callConfigured = false
 	a.callMu.Unlock()
@@ -2539,6 +2566,54 @@ func profileStatus(config usbConfig, raw string, needsReconnect bool, message st
 	return usbProfileStatus{Mode: mode, UACEnabled: config.uacEnabled(), Configuration: raw, NeedsReconnect: needsReconnect, Message: message}
 }
 
+type usbProfileIntent struct {
+	MobileArmed bool `json:"mobile_armed"`
+}
+
+func (a *app) loadUSBProfileIntentLocked() error {
+	if a.usbProfileIntentLoaded {
+		return nil
+	}
+	if a.usbProfileIntentPath == "" {
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			return err
+		}
+		a.usbProfileIntentPath = filepath.Join(configDir, "DJOneHub", "usb-profile-intent.json")
+	}
+	var intent usbProfileIntent
+	data, err := os.ReadFile(a.usbProfileIntentPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &intent); err != nil {
+			return err
+		}
+	}
+	a.usbProfileMobileArmed = intent.MobileArmed
+	a.usbProfileIntentLoaded = true
+	return nil
+}
+
+func (a *app) persistUSBProfileIntentLocked() error {
+	if err := a.loadUSBProfileIntentLocked(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(a.usbProfileIntentPath), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(usbProfileIntent{MobileArmed: a.usbProfileMobileArmed}, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary := a.usbProfileIntentPath + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, a.usbProfileIntentPath)
+}
+
 func (a *app) usbProfile(w http.ResponseWriter, _ *http.Request) {
 	config, raw, err := a.readUSBProfile()
 	if err != nil {
@@ -2571,6 +2646,11 @@ func (a *app) setUSBProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	wantUAC := mode == "mac"
 	if config.uacEnabled() == wantUAC {
+		a.usbProfileMobileArmed = mode == "mobile"
+		if err := a.persistUSBProfileIntentLocked(); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("保存连接模式意图失败: %v", err))
+			return
+		}
 		message := "当前已是 Mac 完整模式"
 		if mode == "mobile" {
 			message = "当前已是 iPhone/iPad 模式；拔插到移动设备后生效"
@@ -2590,7 +2670,17 @@ func (a *app) setUSBProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	updated := usbConfig{fields: append(append([]string(nil), config.fields[:8]...), map[bool]string{true: "1", false: "0"}[wantUAC])}
 	if mode == "mobile" {
+		a.usbProfileMobileArmed = true
+		if err := a.persistUSBProfileIntentLocked(); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("保存 iPhone/iPad 模式意图失败: %v", err))
+			return
+		}
 		writeJSON(w, http.StatusAccepted, profileStatus(updated, raw, true, "已保存 iPhone/iPad 模式；现在直接拔出并连接移动设备即可"))
+		return
+	}
+	a.usbProfileMobileArmed = false
+	if err := a.persistUSBProfileIntentLocked(); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("保存 Mac 模式意图失败: %v", err))
 		return
 	}
 	if _, err := a.runATCommand("AT+CFUN=1,1", 3*time.Second); err != nil {

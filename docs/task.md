@@ -1,8 +1,8 @@
-# DJOneHub v1.2.8 Public Release
+# DJOneHub v1.2.9 Public Release
 
 ## Current phase
 
-Prepare and publish the approved v1.2.8 release. The source and packages keep
+Prepare and publish the approved v1.2.9 release. The source and packages keep
 module-side runtime files external; first use remains confirmation-gated.
 
 ### Active follow-up: MaVo parity call route
@@ -41,8 +41,12 @@ module-side runtime files external; first use remains confirmation-gated.
   recovery status to the macOS App.
 - [x] Preserve the original USB composition before any initialization write;
   verify re-enumeration and existing SMS/4G after the operation.
-- [ ] Verify the full first-initialization workflow on a factory-default spare
-  module before claiming it as hardware-proven.
+- [x] Verify the full first-initialization workflow on a factory-default module:
+  detect original tuple, require confirmation, write/read back the complete
+  audio tuple, restart, provision and reach the ready state.
+- [x] Verify controlled recovery from a complete legacy UAC tuple back to the
+  standard audio tuple, including local backup creation and ready-state
+  validation.
 - [x] Make legacy UAC configurations eligible for the same confirmation-gated
   recovery flow, with a terminal rollback state rather than an initialization loop.
 - [x] Add retry and official GitHub Contents API fallback for pinned runtime
